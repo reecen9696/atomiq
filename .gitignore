@@ -1,0 +1,5 @@
+target/
+Cargo.lock
+blockchain_data/
+.DS_Store
+*.log

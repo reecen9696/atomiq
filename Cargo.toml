@@ -1,0 +1,39 @@
+[package]
+name = "atomiq"
+version = "0.1.0"
+edition = "2021"
+default-run = "atomiq"
+
+[[bin]]
+name = "atomiq"
+path = "src/main.rs"
+
+[[bin]]
+name = "simple_blockchain"
+path = "src/simple_main.rs"
+
+[[bin]]
+name = "dual_validator"
+path = "src/dual_validator_main.rs"
+
+[dependencies]
+hotstuff_rs = "0.4.0"
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+bincode = "1.3"
+sha2 = "0.10"
+rocksdb = "0.22"
+log = "0.4"
+env_logger = "0.10"
+uuid = { version = "1.0", features = ["v4"] }
+crossbeam = "0.8"
+rand = "0.8"
+ed25519-dalek = { version = "2.0.0", features = ["rand_core"] }
+rand_core = { version = "0.6.4", features = ["getrandom"] }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "throughput_benchmark"
+harness = false
