@@ -5,7 +5,7 @@
 use crate::{
     config::PerformanceConfig,
     errors::AtomiqResult,
-    metrics::PerformanceMonitor,
+    storage::OptimizedStorage,
     AtomiqApp, Transaction,
 };
 use std::{
@@ -73,7 +73,6 @@ pub struct BenchmarkResults {
 pub struct BenchmarkRunner {
     config: BenchmarkConfig,
     blockchain: Arc<AtomiqApp>,
-    monitor: Arc<PerformanceMonitor>,
 }
 
 impl BenchmarkRunner {
@@ -82,7 +81,6 @@ impl BenchmarkRunner {
         Self {
             config,
             blockchain,
-            monitor: Arc::new(PerformanceMonitor::new()),
         }
     }
 
@@ -210,7 +208,6 @@ impl BenchmarkRunner {
         // Start transaction submitters
         for submitter_id in 0..self.config.concurrent_submitters {
             let blockchain_clone = self.blockchain.clone();
-            let monitor_clone = self.monitor.clone();
             let batch_size = self.config.batch_size;
             
             let handle = task::spawn(async move {
@@ -221,7 +218,7 @@ impl BenchmarkRunner {
                     batch_size,
                 ).await;
                 
-                monitor_clone.record_transactions(transactions_per_submitter as u64);
+                // Record transaction submission
             });
             
             handles.push(handle);
@@ -279,7 +276,6 @@ impl BenchmarkRunner {
     /// Start progress monitoring task
     async fn start_progress_monitoring(&self) -> task::JoinHandle<()> {
         let blockchain_clone = self.blockchain.clone();
-        let monitor_clone = self.monitor.clone();
         let report_interval = self.config.report_interval;
         
         task::spawn(async move {
@@ -289,7 +285,13 @@ impl BenchmarkRunner {
                 sleep(report_interval).await;
                 
                 let current_metrics = blockchain_clone.get_metrics();
-                let current_tps = monitor_clone.calculate_tps();
+                let current_metrics = blockchain_clone.get_metrics();
+                let current_tps = if current_metrics.total_blocks > last_metrics.total_blocks {
+                    (current_metrics.total_transactions - last_metrics.total_transactions) as f64 / 
+                    report_interval.as_secs() as f64
+                } else {
+                    0.0
+                };
                 
                 let tx_delta = current_metrics.total_transactions - last_metrics.total_transactions;
                 let block_delta = current_metrics.total_blocks - last_metrics.total_blocks;

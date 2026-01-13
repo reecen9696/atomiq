@@ -29,12 +29,13 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-// Re-export common types and utilities
-pub use common::types::{Block, Transaction};
-pub use errors::{AtomiqError, AtomiqResult};
+// ============================================================================
+// Module Organization (Clean Architecture)
+// ============================================================================
 
-// Core modules
+// Core modules with clean architecture layers
 pub mod common;
+pub mod api;
 pub mod errors;
 pub mod storage;
 pub mod network;
@@ -43,35 +44,11 @@ pub mod config;
 pub mod benchmark;
 pub mod transaction_pool;
 pub mod direct_commit;
-
-// API module  
-pub mod api;
-
-// ============================================================================
-// Module Organization (Layered Architecture)
-// ============================================================================
-
-// Domain Layer - Core business logic
-pub mod domain {
-    //! Domain models and business rules
-    pub use super::{Block, Transaction};
-}
-
-// Infrastructure Layer
-pub mod api;
-pub mod config;
-pub mod errors;
-pub mod factory;
-pub mod storage;
-pub mod network;
-pub mod metrics;
-pub mod benchmark;
-pub mod transaction_pool;
 pub mod state_manager;
-pub mod direct_commit;
+pub mod services;
 
 // Re-export commonly used types for convenience
-pub use config::{AtomiqConfig, BlockchainConfig, ConsensusMode};
+pub use config::{BlockchainConfig, ConsensusMode};
 pub use errors::{AtomiqError, AtomiqResult};
 pub use factory::{BlockchainFactory, BlockchainHandle};
 pub use direct_commit::{DirectCommitEngine, DirectCommitMetrics};

@@ -5,8 +5,8 @@
 
 use crate::{
     common::{
-        traits::{BlockchainStorage, NetworkInterface, ConsensusEngine, MetricsCollector},
-        config::{ConfigLoader, AtomiqConfig},
+        traits::{AtomiqConfig, BlockchainStorage, NetworkInterface, ConsensusEngine, MetricsCollector},
+        config::{ConfigLoader},
     },
     errors::AtomiqResult,
     storage::OptimizedStorage,
@@ -70,7 +70,7 @@ impl ServiceContainer {
         // For now, we'll create a basic ApiStorage
         // In a real implementation, this would use the DI container
         ApiStorage::new(Arc::new(
-            OptimizedStorage::open(&self.config.storage.data_dir)
+            OptimizedStorage::new(&self.config.storage.data_dir)
                 .expect("Failed to open storage")
         ))
     }

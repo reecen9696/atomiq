@@ -2,15 +2,10 @@
 //! 
 //! Standalone HTTP API for blockchain explorer and external integrations.
 
-mod api;
-mod config;
-mod errors;
-mod storage;
-
-use api::server::{ApiConfig, ApiServer};
+use atomiq::api::server::{ApiConfig, ApiServer};
 use clap::Parser;
-use config::StorageConfig;
-use storage::OptimizedStorage;
+use atomiq::config::StorageConfig;
+use atomiq::storage::OptimizedStorage;
 use std::sync::Arc;
 
 #[derive(Parser, Debug)]
@@ -44,6 +39,18 @@ struct Args {
     /// Network name
     #[arg(long, default_value = "atomiq-mainnet")]
     network: String,
+
+    /// Enable HTTPS/TLS
+    #[arg(long)]
+    tls: bool,
+
+    /// Path to TLS certificate file (PEM format)
+    #[arg(long)]
+    cert_path: Option<String>,
+
+    /// Path to TLS private key file (PEM format)
+    #[arg(long)]
+    key_path: Option<String>,
 }
 
 #[tokio::main]
@@ -67,6 +74,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|s| s.trim().to_string())
         .collect();
 
+    // Validate TLS configuration
+    if args.tls {
+        if args.cert_path.is_none() {
+            return Err("--cert-path is required when --tls is enabled".into());
+        }
+        if args.key_path.is_none() {
+            return Err("--key-path is required when --tls is enabled".into());
+        }
+    }
+
     // Create API configuration
     let api_config = ApiConfig {
         host: args.host,
@@ -76,6 +93,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         node_id: args.node_id,
         network: args.network,
         version: env!("CARGO_PKG_VERSION").to_string(),
+        tls_enabled: args.tls,
+        cert_path: args.cert_path,
+        key_path: args.key_path,
     };
 
     // Create and run server

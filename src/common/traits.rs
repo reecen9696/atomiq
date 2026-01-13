@@ -6,6 +6,7 @@
 use crate::errors::AtomiqResult;
 use crate::common::types::{Block, Transaction};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
 /// Generic storage interface for blockchain data
 #[async_trait]
@@ -134,7 +135,7 @@ pub struct ConsensusState {
 }
 
 /// Configuration structure
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AtomiqConfig {
     pub network: NetworkConfig,
     pub consensus: ConsensusConfig,
@@ -143,7 +144,7 @@ pub struct AtomiqConfig {
     pub metrics: MetricsConfig,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NetworkConfig {
     pub listen_address: String,
     pub port: u16,
@@ -151,7 +152,7 @@ pub struct NetworkConfig {
     pub max_connections: u32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConsensusConfig {
     pub algorithm: String,
     pub timeout_ms: u64,
@@ -159,14 +160,14 @@ pub struct ConsensusConfig {
     pub max_transactions_per_block: usize,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StorageConfig {
     pub data_dir: String,
     pub cache_size: usize,
     pub sync_writes: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ApiConfig {
     pub enabled: bool,
     pub listen_address: String,
@@ -174,7 +175,7 @@ pub struct ApiConfig {
     pub cors_origins: Vec<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MetricsConfig {
     pub enabled: bool,
     pub collection_interval_ms: u64,

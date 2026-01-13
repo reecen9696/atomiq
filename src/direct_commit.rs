@@ -87,17 +87,20 @@ impl DirectCommitEngine {
     /// Produce a block and commit it directly to storage
     async fn produce_and_commit_block(&self) -> Result<(), String> {
         let mut app = self.app.write().await;
-        
-        // Get current block height
-        let height = self.last_block_height.fetch_add(1, Ordering::SeqCst) + 1;
-        
+
         // Drain transactions from pool
         let transactions = app.drain_transaction_pool();
-        
-        // Skip empty blocks
+
+        // Skip empty blocks.
+        // IMPORTANT: do not advance height when no block is committed.
+        // Otherwise the DB ends up with gaps (e.g. missing /block/1..N) even though
+        // `latest_height` is much larger.
         if transactions.is_empty() {
             return Ok(());
         }
+
+        // Get next committed block height
+        let height = self.last_block_height.fetch_add(1, Ordering::SeqCst) + 1;
         
         // Execute transactions and get state root
         let (_results, state_updates) = app.execute_transactions(&transactions);

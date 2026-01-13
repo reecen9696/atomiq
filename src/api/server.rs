@@ -24,6 +24,9 @@ pub struct ApiConfig {
     pub node_id: String,
     pub network: String,
     pub version: String,
+    pub tls_enabled: bool,
+    pub cert_path: Option<String>,
+    pub key_path: Option<String>,
 }
 
 impl Default for ApiConfig {
@@ -36,6 +39,9 @@ impl Default for ApiConfig {
             node_id: "atomiq-node-1".to_string(),
             network: "atomiq-mainnet".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
+            tls_enabled: false,
+            cert_path: None,
+            key_path: None,
         }
     }
 }
@@ -61,7 +67,37 @@ impl ApiServer {
             )
             .init();
 
-        // Create application state
+        if self.config.tls_enabled {
+            info!("⚠️  HTTPS/TLS support is planned but not yet implemented");
+            info!("   Use a reverse proxy (Nginx/Caddy) for production HTTPS");
+            info!("   Continuing with HTTP...");
+        }
+
+        self.run_http().await
+    }
+
+    /// Run HTTP server
+    async fn run_http(self) -> Result<(), Box<dyn std::error::Error>> {
+        let app = self.create_app();
+        let addr = self.get_socket_addr()?;
+
+        info!("🚀 Atomiq API Server starting (HTTP)");
+        info!("   Listen: http://{}", addr);
+        self.log_server_info();
+
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        info!("✅ API Server running");
+
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_signal())
+            .await?;
+
+        info!("🛑 API Server stopped");
+        Ok(())
+    }
+
+    /// Create the application with middleware
+    fn create_app(&self) -> axum::Router {
         let state = Arc::new(AppState {
             storage: ApiStorage::new(self.storage.clone()),
             node_id: self.config.node_id.clone(),
@@ -69,38 +105,30 @@ impl ApiServer {
             version: self.config.version.clone(),
         });
 
-        // Build router with middleware
-        let app = create_router(state)
+        create_router(state)
             .layer(axum::middleware::from_fn(request_id_middleware))
             .layer(create_cors_layer(self.config.allowed_origins.clone()))
             .layer(TimeoutLayer::new(Duration::from_secs(self.config.request_timeout_secs)))
-            .layer(TraceLayer::new_for_http());
+            .layer(TraceLayer::new_for_http())
+    }
 
-        // Bind address
-        let addr = SocketAddr::from((
+    /// Get socket address from config
+    fn get_socket_addr(&self) -> Result<SocketAddr, Box<dyn std::error::Error>> {
+        Ok(SocketAddr::from((
             self.config.host.parse::<std::net::IpAddr>()?,
             self.config.port,
-        ));
+        )))
+    }
 
-        info!("🚀 Atomiq API Server starting");
-        info!("   Listen: http://{}", addr);
+    /// Log server information
+    fn log_server_info(&self) {
         info!("   Network: {}", self.config.network);
         info!("   Version: {}", self.config.version);
         info!("   CORS: {:?}", self.config.allowed_origins);
         info!("   Request ID tracking: enabled");
-
-        // Create server
-        let listener = tokio::net::TcpListener::bind(addr).await?;
-        
-        info!("✅ API Server running");
-
-        // Run with graceful shutdown
-        axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown_signal())
-            .await?;
-
-        info!("🛑 API Server stopped");
-        Ok(())
+        if self.config.tls_enabled {
+            info!("   TLS: configured (using reverse proxy recommended)");
+        }
     }
 }
 

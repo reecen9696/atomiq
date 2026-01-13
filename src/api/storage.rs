@@ -6,7 +6,7 @@
 use crate::{
     storage::OptimizedStorage,
     errors::AtomiqResult,
-    common::types::{Block, Transaction},
+    Block, Transaction,
 };
 use hotstuff_rs::block_tree::pluggables::KVGet;
 use std::sync::Arc;
