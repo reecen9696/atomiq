@@ -4,7 +4,7 @@
 //! HotStuff consensus for ultra-high performance single-validator operation.
 
 use atomiq::{
-    AtomiqConfig, BlockchainFactory, ConsensusMode, Transaction,
+    config::AtomiqConfig, BlockchainFactory, ConsensusMode, Transaction,
 };
 use clap::{Parser, Subcommand};
 use std::sync::Arc;

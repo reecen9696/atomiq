@@ -46,6 +46,7 @@ pub mod transaction_pool;
 pub mod direct_commit;
 pub mod state_manager;
 pub mod services;
+pub mod metrics;
 
 // Re-export commonly used types for convenience
 pub use config::{BlockchainConfig, ConsensusMode};

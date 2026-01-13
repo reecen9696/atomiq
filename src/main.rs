@@ -4,7 +4,8 @@
 
 use atomiq::{
     AtomiqApp, BlockchainConfig, Transaction,
-    network::MockNetwork, metrics::PerformanceMonitor, storage::OptimizedStorage,
+    network::MockNetwork, storage::OptimizedStorage,
+    metrics::PerformanceMonitor,
 };
 use hotstuff_rs::{
     replica::{Configuration, Replica, ReplicaSpec},
