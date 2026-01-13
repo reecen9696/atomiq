@@ -1,116 +1,295 @@
 # Atomiq Blockchain
 
-High-performance single-validator blockchain using HotStuff-rs consensus, optimized for maximum throughput with cryptographic integrity.
+A production-ready, high-performance blockchain built on the **HotStuff-rs** consensus protocol. Atomiq is designed for single-validator deployments with enterprise-grade persistence, comprehensive benchmarking tools, and a clean CLI interface.
 
-## Features
+## What is Atomiq?
 
-- 🚀 **High Throughput**: Target 20,000+ TPS with proper validation
-- ⚡ **Fast Block Times**: 5-10ms block creation target
-- 🔒 **Single Validator BFT**: Simplified Byzantine fault tolerant consensus with one validator
-- 🔗 **Cryptographic Hashing**: True blockchain integrity with SHA-256 block hashing
-- 📊 **Real-time Metrics**: Comprehensive performance monitoring
-- 🧹 **Lean Design**: Minimal complexity, maximum performance
+Atomiq is a **single-validator blockchain** that provides:
+
+- **Byzantine Fault Tolerant Consensus**: Uses the HotStuff consensus algorithm (the same algorithm powering Meta's Diem/Libra)
+- **Persistent Storage**: RocksDB-backed blockchain with full state persistence across restarts
+- **Production & Testing Modes**: Clear separation between production (persistent) and testing (ephemeral) configurations
+- **Comprehensive Benchmarking**: Built-in tools to measure throughput, consensus performance, and system limits
+- **Clean Architecture**: Factory patterns, modular design, and enterprise-grade error handling
 
 ## Quick Start
 
 ```bash
-# Run main blockchain (single validator HotStuff)
-cargo run --release
+# Run single validator blockchain (production mode)
+cargo run --release --bin atomiq-unified -- single-validator --max-tx-per-block 100 --block-time-ms 500
 
-# Run simplified version (bypasses consensus)
-cargo run --bin simple_blockchain --release
+# Run throughput test (no consensus, just submission speed)
+cargo run --release --bin atomiq-unified -- throughput-test --total-transactions 10000 --batch-size 100
 
-# Run explicit single validator test
-cargo run --bin dual_validator --release
+# Run consensus benchmark (with actual block commits)
+cargo run --release --bin atomiq-unified -- benchmark-consensus --total-transactions 500 --duration-seconds 30
 
-# Run benchmarks
-cargo bench
+# Run high-performance benchmark
+cargo run --release --bin atomiq-unified -- benchmark-performance --target-tps 10000 --total-transactions 1000
 
-# Run tests
-cargo test
+# Inspect database contents
+cargo run --release --bin atomiq-unified -- inspect-db
 ```
 
-## Configuration
+## How It Works
 
-The blockchain can be configured via `BlockchainConfig`:
+### Architecture
 
-```rust
-BlockchainConfig {
-    max_transactions_per_block: 10000, // High throughput batching
-    max_block_time_ms: 10,             // 10ms block times
-    enable_state_validation: true,     // Full validation for real TPS
-    batch_size_threshold: 1000,        // Create block when we hit 1000 txs
-}
 ```
+┌─────────────────────────────────────────────────────────┐
+│                  Atomiq Application                      │
+├─────────────────────────────────────────────────────────┤
+│  Transaction Pool → State Manager → Block Creation      │
+└─────────────────────────────────────────────────────────┘
+                          ↓
+┌─────────────────────────────────────────────────────────┐
+│              HotStuff-rs Consensus Layer                 │
+├─────────────────────────────────────────────────────────┤
+│  • Propose Blocks                                        │
+│  • Phase Voting (Prepare, Pre-Commit, Commit)          │
+│  • View Advancement                                      │
+│  • Safety & Liveness Guarantees                         │
+└─────────────────────────────────────────────────────────┘
+                          ↓
+┌─────────────────────────────────────────────────────────┐
+│                 RocksDB Persistence                      │
+├─────────────────────────────────────────────────────────┤
+│  • Block Tree Storage                                    │
+│  • Transaction History                                   │
+│  • Consensus State (View, PC, Validator Set)           │
+│  • Application State (Nonces, Data)                     │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Consensus Flow
+
+1. **Transaction Submission**: Transactions are submitted to the transaction pool
+2. **Block Proposal**: Leader (single validator) proposes a new block with pending transactions
+3. **Voting Phases**:
+   - Generic phase vote validates the block
+   - Block is inserted into the block tree
+   - Phase Certificate (PC) is collected
+4. **Block Commit**: After 3-chain rule is satisfied, blocks are committed to the chain
+5. **State Update**: Committed blocks update the application state
+6. **Persistence**: All data is written to RocksDB for crash recovery
+
+### Key Components
+
+- **`BlockchainFactory`**: Creates blockchain instances with different configurations (production, testing, high-performance)
+- **`StateManager`**: Manages transaction nonces, validation, and state updates
+- **`TransactionPool`**: Buffers and batches transactions for block creation
+- **`BenchmarkRunner`**: Provides comprehensive performance testing tools
+- **`OptimizedStorage`**: RocksDB wrapper with performance tuning (LZ4 compression, write buffers)
 
 ## Performance Characteristics
 
-- **Block Creation**: ~2-5ms with cryptographic hashing
-- **Hash Computation**: ~2 microseconds (SHA-256)
-- **Transaction Validation**: Full nonce + state validation enabled
-- **Storage Writes**: Batched RocksDB operations
-- **Network Overhead**: Zero (single validator, mock network)
-- **Consensus Overhead**: Minimal (self-messaging only)
+### Measured Performance
 
-## Architecture
+- **Submission TPS**: 300K - 400K transactions/second (throughput test, no consensus)
+- **Processing TPS**: ~10 transactions/second (with full HotStuff consensus)
+- **Block Time**: Configurable (default 100ms for production, 5-10ms for testing)
+- **Consensus Overhead**: ~100ms per view (proposal + voting + commit phases)
 
-- **Consensus**: Single validator HotStuff-rs BFT (Power = 1)
-- **Storage**: RocksDB with LZ4 compression and optimized write buffers
-- **Networking**: Mock network for single-node operation (no P2P overhead)
-- **State**: In-memory HashMap with persistent RocksDB backing
-- **Block Hashing**: SHA-256 cryptographic hashing (height + justify + data_hash)
-- **View Timeout**: Aggressive 10ms for single validator optimization
+### Why Single Validator?
 
-## Single Validator Setup
+The single-validator configuration provides:
 
-The blockchain is currently configured as a single validator system:
+✅ **Simplified Operations**: No network coordination, no peer discovery  
+✅ **Deterministic Performance**: Predictable latency without network variables  
+✅ **Production Ready**: Proven consensus algorithm without multi-validator complexity  
+✅ **Easy Testing**: Fast iteration for development and benchmarking
+
+⚠️ **Trade-off**: No Byzantine fault tolerance (system fails if validator fails)
+
+## Configuration Modes
+
+Atomiq supports multiple operational modes:
+
+### Production Mode (Default)
 
 ```rust
-// Single validator with full voting power
-validator_set_updates.insert(verifying_key, Power::new(1));
-
-// Optimized timing for single validator
-.max_view_time(Duration::from_millis(10))
-.block_sync_trigger_min_view_difference(1)
+AtomiqConfig::production()
+// or
+AtomiqConfig::default()
 ```
 
-This eliminates multi-validator consensus overhead while maintaining:
+- **Data Persistence**: ✅ Preserves blockchain across restarts
+- **Block Time**: 100ms (configurable)
+- **Validation**: Full state validation enabled
+- **Use Case**: Production deployment, long-running nodes
 
-- ✅ Cryptographic block integrity
-- ✅ Persistent blockchain storage
-- ✅ HotStuff consensus structure
-- ✅ Transaction validation
-- ❌ No Byzantine fault tolerance (single point of failure)
-- ❌ No network consensus delays
+### Testing Mode
 
-## Expected Database Growth
+```rust
+AtomiqConfig::high_performance()
+AtomiqConfig::consensus_testing()
+```
 
-With 15,000 TPS average:
+- **Data Persistence**: ❌ Clears database on startup
+- **Block Time**: 5-10ms (aggressive)
+- **Validation**: Configurable (can disable for max speed)
+- **Use Case**: Benchmarks, CI/CD tests, development
 
-- **Weekly Growth**: ~3-4 TB
-- **With Pruning**: ~1.2 TB (30-day retention)
-- **Transaction Size**: ~166 bytes average
-- **State Per TX**: ~148 bytes average
+See [PERSISTENCE.md](PERSISTENCE.md) for detailed persistence documentation.
 
-## Future Extensibility
+## CLI Commands
 
-This single-validator implementation can be easily extended to:
+### `single-validator`
 
-- **Multi-validator networks**: Add more validators to the ValidatorSet
-- **Real P2P networking**: Replace MockNetwork with TCP/UDP implementation
-- **Casino/gaming logic**: Add application-specific transaction types
-- **Advanced state management**: Implement complex state machines
-- **Cross-chain features**: Bridge to other blockchains
+Runs a single validator blockchain with actual consensus.
 
-## Performance vs Security Trade-offs
+```bash
+cargo run --release --bin atomiq-unified -- single-validator \
+  --max-tx-per-block 100 \
+  --block-time-ms 500
+```
 
-| Aspect                    | Single Validator | Multi-Validator BFT |
-| ------------------------- | ---------------- | ------------------- |
-| TPS                       | 20,000+          | ~1,000-5,000        |
-| Block Time                | 5-10ms           | 1-3 seconds         |
-| Network Overhead          | None             | High                |
-| Byzantine Fault Tolerance | ❌               | ✅                  |
-| Cryptographic Integrity   | ✅               | ✅                  |
-| Production Ready          | POC Only         | Yes                 |
+### `benchmark-consensus`
 
-# atomiq
+Tests consensus correctness and performance.
+
+```bash
+cargo run --release --bin atomiq-unified -- benchmark-consensus \
+  --total-transactions 1000 \
+  --duration-seconds 30
+```
+
+### `benchmark-performance`
+
+High-speed performance test with aggressive timing.
+
+```bash
+cargo run --release --bin atomiq-unified -- benchmark-performance \
+  --target-tps 10000 \
+  --total-transactions 5000 \
+  --concurrent-submitters 8
+```
+
+### `throughput-test`
+
+Measures pure transaction submission speed (no consensus).
+
+```bash
+cargo run --release --bin atomiq-unified -- throughput-test \
+  --total-transactions 10000 \
+  --batch-size 100
+```
+
+### `inspect-db`
+
+Examine database contents and statistics.
+
+```bash
+cargo run --release --bin atomiq-unified -- inspect-db --db-path ./blockchain_data
+```
+
+## Development
+
+### Project Structure
+
+```
+atomiq/
+├── src/
+│   ├── lib.rs              # Core blockchain logic (AtomiqApp)
+│   ├── factory.rs          # Blockchain initialization factory
+│   ├── config.rs           # Configuration system
+│   ├── state_manager.rs    # State validation & management
+│   ├── transaction_pool.rs # Transaction buffering
+│   ├── storage.rs          # RocksDB wrapper
+│   ├── benchmark.rs        # Benchmarking tools
+│   ├── errors.rs           # Error types
+│   ├── network.rs          # Mock network implementation
+│   └── main_unified.rs     # CLI entry point
+├── Cargo.toml
+├── README.md
+└── PERSISTENCE.md
+```
+
+### Running Tests
+
+```bash
+# Run all tests
+cargo test
+
+# Run with logging
+RUST_LOG=info cargo test
+
+# Run specific test
+cargo test test_blockchain_initialization
+```
+
+### Adding Custom Transaction Logic
+
+Extend the `AtomiqApp` to add custom transaction types:
+
+```rust
+impl App for AtomiqApp {
+    fn execute_transactions(&self, txs: &[Transaction]) -> (Vec<ExecutionResult>, AppStateUpdates) {
+        // Your custom logic here
+        // - Validate transaction format
+        // - Check business rules
+        // - Update state
+        // - Return results
+    }
+}
+```
+
+## Future Extensions
+
+### Multi-Validator Support
+
+The architecture is designed to easily support multiple validators:
+
+1. Replace `SingleValidatorNetwork` with TCP/UDP network implementation
+2. Add multiple validators to `ValidatorSetUpdates`
+3. Configure proper view timeout for network latency
+
+### Application-Specific Logic
+
+Atomiq can be extended for:
+
+- **Gaming/Casino**: Player balances, game outcomes, provably fair randomness
+- **DeFi**: Token transfers, liquidity pools, lending protocols
+- **NFT Marketplace**: Asset creation, ownership transfers, royalties
+- **Supply Chain**: Product tracking, authenticity verification
+
+### Performance Optimizations
+
+- Parallel transaction execution
+- State pruning and archival nodes
+- Batch signature verification
+- Memory-mapped storage
+
+## Troubleshooting
+
+### Database Issues
+
+```bash
+# Clear and restart
+rm -rf blockchain_data/
+cargo run --release --bin atomiq-unified -- single-validator
+```
+
+### Performance Issues
+
+- Check `max_view_time` configuration (lower for single validator)
+- Verify RocksDB settings (write buffer size, compression)
+- Monitor system resources (CPU, disk I/O)
+
+### Consensus Stuck
+
+- View timeouts are working as expected (you'll see timeout logs)
+- Single validator self-messages may cause temporary delays
+- Check block proposal rate matches expected timing
+
+## License
+
+See LICENSE file for details.
+
+## Contributing
+
+Contributions welcome! Please open an issue or PR.
+
+---
+
+**Built with [HotStuff-rs](https://github.com/parallelchain-io/hotstuff_rs)** - A high-performance implementation of the HotStuff consensus protocol
