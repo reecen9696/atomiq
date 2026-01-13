@@ -98,9 +98,45 @@ impl ApiStorage {
         Ok(blocks)
     }
 
-    /// Find transaction by ID across all blocks
+    /// Find transaction by ID using index for O(1) lookup
     /// Returns (block_height, tx_index, transaction)
     pub fn find_transaction(&self, tx_id: u64) -> AtomiqResult<Option<(u64, usize, Transaction)>> {
+        // First try to use the transaction index (Fix D)
+        let tx_index_key = format!("tx_index:{}", tx_id);
+        if let Some(location_bytes) = self.storage.get(tx_index_key.as_bytes()) {
+            let location_str = String::from_utf8(location_bytes).map_err(|_| {
+                crate::errors::AtomiqError::Storage(
+                    crate::errors::StorageError::CorruptedData("Invalid transaction index format".to_string())
+                )
+            })?;
+            
+            let parts: Vec<&str> = location_str.split(':').collect();
+            if parts.len() == 2 {
+                let height: u64 = parts[0].parse().map_err(|_| {
+                    crate::errors::AtomiqError::Storage(
+                        crate::errors::StorageError::CorruptedData("Invalid height in transaction index".to_string())
+                    )
+                })?;
+                let tx_index: usize = parts[1].parse().map_err(|_| {
+                    crate::errors::AtomiqError::Storage(
+                        crate::errors::StorageError::CorruptedData("Invalid tx_index in transaction index".to_string())
+                    )
+                })?;
+                
+                // Get transaction data directly by ID
+                let tx_data_key = format!("tx_data:{}", tx_id);
+                if let Some(tx_bytes) = self.storage.get(tx_data_key.as_bytes()) {
+                    let transaction: Transaction = bincode::deserialize(&tx_bytes).map_err(|e| {
+                        crate::errors::AtomiqError::Storage(
+                            crate::errors::StorageError::CorruptedData(format!("Failed to deserialize transaction: {}", e))
+                        )
+                    })?;
+                    return Ok(Some((height, tx_index, transaction)));
+                }
+            }
+        }
+        
+        // Fallback to block scanning (for backwards compatibility with old data)
         let latest_height = self.get_latest_height()?;
         
         // Search backwards from latest block (most recent transactions first)

@@ -70,19 +70,42 @@ impl TransactionPool {
         }
     }
 
-    /// Submit transaction to pool with validation
+    /// Submit transaction to pool with validation and backpressure handling
     pub fn submit_transaction(&self, mut transaction: Transaction) -> AtomiqResult<u64> {
         // Validate transaction size
         if transaction.data.len() > self.config.max_transaction_data_size {
+            log::warn!(
+                "Transaction rejected: data too large ({} bytes > {} max)",
+                transaction.data.len(),
+                self.config.max_transaction_data_size
+            );
             return Err(TransactionError::DataTooLarge {
                 size: transaction.data.len(),
                 max_size: self.config.max_transaction_data_size,
             }.into());
         }
 
-        // Check pool capacity
-        if self.pool_size() >= self.config.max_pool_size {
+        let current_pool_size = self.pool_size();
+        
+        // Check pool capacity with enhanced logging
+        if current_pool_size >= self.config.max_pool_size {
+            log::warn!(
+                "Transaction pool full: rejecting transaction (current: {}, max: {}). Consider increasing pool size or reducing transaction rate.",
+                current_pool_size,
+                self.config.max_pool_size
+            );
             return Err(TransactionError::PoolFull.into());
+        }
+        
+        // Log when pool is getting close to capacity (90% threshold)
+        let capacity_ratio = current_pool_size as f64 / self.config.max_pool_size as f64;
+        if capacity_ratio > 0.9 {
+            log::warn!(
+                "Transaction pool nearing capacity: {}/{} ({:.1}% full). System experiencing backpressure.",
+                current_pool_size,
+                self.config.max_pool_size,
+                capacity_ratio * 100.0
+            );
         }
 
         // Assign ID and timestamp

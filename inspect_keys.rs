@@ -1,0 +1,1 @@
+use rocksdb::DB; fn main() { let db = DB::open_default("./DB/blockchain_data").unwrap(); let iter = db.iterator(rocksdb::IteratorMode::Start); for (k, v) in iter.take(20) { let key = String::from_utf8_lossy(&k); if key.contains("latest") || key.contains("tx_") || key.contains("block") { println!("{}: {:?}", key, v.len()); } } }

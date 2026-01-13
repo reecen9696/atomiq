@@ -79,7 +79,9 @@ pub struct ConsensusConfig {
 impl Default for ConsensusConfig {
     fn default() -> Self {
         Self {
-            mode: ConsensusMode::DirectCommit, // Fast by default for single validator
+            // PRODUCTION DEFAULT: DirectCommit for single-validator high performance
+            // Switch to HotStuff only if you need multi-validator consensus
+            mode: ConsensusMode::DirectCommit,
             max_view_time_ms: 2000,
             epoch_length: 100,
             block_sync_request_limit: 100,
