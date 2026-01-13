@@ -81,9 +81,12 @@ impl BlockchainFactory {
             crate::errors::ConfigurationError::ValidationFailed(e.to_string())
         ))?;
 
-        // Clean up old data if requested
-        if config.storage.data_directory != ":memory:" {
+        // Clean up old data ONLY if testing mode enabled
+        if config.storage.clear_on_start && config.storage.data_directory != ":memory:" {
+            println!("⚠️  Testing mode: Clearing database at {}", config.storage.data_directory);
             let _ = fs::remove_dir_all(&config.storage.data_directory);
+        } else if !config.storage.clear_on_start {
+            println!("📦 Production mode: Preserving existing blockchain data at {}", config.storage.data_directory);
         }
 
         // Create components
@@ -315,6 +318,11 @@ impl BlockchainFactory {
         let mut config = AtomiqConfig::default();
         config.network.mode = NetworkMode::Mock;
         Self::create_blockchain(config).await
+    }
+
+    /// Create blockchain for production deployment with persistence
+    pub async fn create_production() -> AtomiqResult<(Arc<AtomiqApp>, Box<dyn BlockchainHandle>)> {
+        Self::create_blockchain(AtomiqConfig::production()).await
     }
 }
 

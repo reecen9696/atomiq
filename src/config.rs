@@ -130,6 +130,8 @@ pub struct StorageConfig {
     pub max_write_buffer_number: usize,
     pub target_file_size_mb: usize,
     pub compression_type: CompressionType,
+    /// Whether to clear database on startup (testing only!)
+    pub clear_on_start: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -148,6 +150,7 @@ impl Default for StorageConfig {
             max_write_buffer_number: 4,
             target_file_size_mb: 128,
             compression_type: CompressionType::Lz4,
+            clear_on_start: false,  // Production default: preserve data
         }
     }
 }
@@ -214,6 +217,7 @@ impl AtomiqConfig {
                 write_buffer_size_mb: 512,
                 max_write_buffer_number: 8,
                 target_file_size_mb: 256,
+                clear_on_start: true,  // Testing mode: clear DB
                 ..Default::default()
             },
             ..Default::default()
@@ -242,6 +246,44 @@ impl AtomiqConfig {
                 concurrent_submitters: 2,
                 batch_size: 25,
                 benchmark_duration_seconds: 30,
+                ..Default::default()
+            },
+            storage: StorageConfig {
+                clear_on_start: true,  // Testing mode: clear DB
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    /// Create configuration for production deployment with persistence
+    pub fn production() -> Self {
+        Self {
+            blockchain: BlockchainConfig {
+                max_transactions_per_block: 10_000,
+                max_block_time_ms: 100,
+                enable_state_validation: true,
+                batch_size_threshold: 1_000,
+                chain_id: 1,
+            },
+            consensus: ConsensusConfig {
+                max_view_time_ms: 2000,
+                epoch_length: 100,
+                block_sync_request_limit: 100,
+                block_sync_trigger_min_view_difference: 2,
+                progress_msg_buffer_capacity: 10240,
+            },
+            storage: StorageConfig {
+                data_directory: "./blockchain_data".to_string(),
+                write_buffer_size_mb: 256,
+                max_write_buffer_number: 6,
+                target_file_size_mb: 256,
+                compression_type: CompressionType::Lz4,
+                clear_on_start: false,  // Production: preserve blockchain data
+            },
+            monitoring: MonitoringConfig {
+                enable_logging: true,
+                log_level: LogLevel::Info,
                 ..Default::default()
             },
             ..Default::default()

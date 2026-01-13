@@ -39,7 +39,7 @@ enum Commands {
     /// Run high-performance benchmark
     BenchmarkPerformance {
         /// Target transactions per second
-        #[arg(short, long, default_value = "100000")]
+        #[arg(short = 'r', long, default_value = "100000")]
         target_tps: u64,
         
         /// Total transactions to process
@@ -65,7 +65,7 @@ enum Commands {
     /// Run single validator blockchain
     SingleValidator {
         /// Maximum transactions per block
-        #[arg(short, long, default_value = "1000")]
+        #[arg(short = 'x', long, default_value = "1000")]
         max_tx_per_block: usize,
         
         /// Block time in milliseconds
