@@ -466,6 +466,6 @@ mod tests {
         let (results, _) = manager.execute_transactions(&transactions);
         assert_eq!(results.len(), 1);
         assert!(!results[0].success);
-        assert!(results[0].error_message.unwrap().contains("empty"));
+        assert!(results[0].error_message.as_ref().unwrap().contains("empty"));
     }
 }

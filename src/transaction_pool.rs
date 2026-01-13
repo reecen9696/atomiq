@@ -86,7 +86,8 @@ impl TransactionPool {
         }
 
         // Assign ID and timestamp
-        transaction.id = self.transaction_counter.fetch_add(1, Ordering::SeqCst);
+        let tx_id = self.transaction_counter.fetch_add(1, Ordering::SeqCst) + 1;
+        transaction.id = tx_id;
         transaction.timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -109,7 +110,7 @@ impl TransactionPool {
             }
         }
 
-        Ok(transaction.id)
+        Ok(tx_id)
     }
 
     /// Get current transaction pool size

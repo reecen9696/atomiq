@@ -1,7 +1,16 @@
-//! Atomiq - High-Performance Single-Validator Blockchain
+//! Atomiq - High-Performance Blockchain Platform
 //!
-//! Clean, minimal blockchain implementation optimized for maximum TPS.
-//! Uses HotStuff-rs consensus with single validator for performance.
+//! A production-ready blockchain with dual consensus modes:
+//! - DirectCommit: Ultra-fast (5K-10K TPS) for single-validator scenarios
+//! - FullHotStuff: BFT consensus for multi-validator networks
+//!
+//! ## Architecture
+//!
+//! The codebase follows clean architecture principles with clear separation:
+//! - **Domain Layer**: Block, Transaction, core business logic
+//! - **Application Layer**: AtomiqApp, state management, transaction pool
+//! - **Infrastructure Layer**: Storage, networking, consensus engines
+//! - **Presentation Layer**: CLI tools, HTTP API
 
 use hotstuff_rs::{
     app::{App, ProduceBlockRequest, ProduceBlockResponse, ValidateBlockRequest, ValidateBlockResponse},
@@ -21,7 +30,18 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-// Export all modules for external use
+// ============================================================================
+// Module Organization (Layered Architecture)
+// ============================================================================
+
+// Domain Layer - Core business logic
+pub mod domain {
+    //! Domain models and business rules
+    pub use super::{Block, Transaction};
+}
+
+// Infrastructure Layer
+pub mod api;
 pub mod config;
 pub mod errors;
 pub mod factory;
@@ -33,24 +53,63 @@ pub mod transaction_pool;
 pub mod state_manager;
 pub mod direct_commit;
 
-// Re-export commonly used types
+// Re-export commonly used types for convenience
 pub use config::{AtomiqConfig, BlockchainConfig, ConsensusMode};
 pub use errors::{AtomiqError, AtomiqResult};
 pub use factory::{BlockchainFactory, BlockchainHandle};
 pub use direct_commit::{DirectCommitEngine, DirectCommitMetrics};
 
-/// Transaction with minimal required fields for performance testing
+// Re-export storage interface
+pub use hotstuff_rs::block_tree::pluggables::KVGet;
+
+// ============================================================================
+// Domain Models
+// ============================================================================
+
+/// Transaction represents a single operation in the blockchain
+/// 
+/// Design principles:
+/// - Immutable after creation (all fields are `pub` but should be set once)
+/// - Self-contained hashing logic
+/// - Minimal dependencies
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Transaction {
+    /// Unique transaction identifier
     pub id: u64,
+    /// Sender address (32-byte public key hash)
     pub sender: [u8; 32],
+    /// Transaction payload (arbitrary data)
     pub data: Vec<u8>,
+    /// Unix timestamp in milliseconds
     pub timestamp: u64,
+    /// Nonce for replay protection
     pub nonce: u64,
 }
 
 impl Transaction {
-    /// Calculate transaction hash
+    /// Create a new transaction with current timestamp
+    pub fn new(id: u64, sender: [u8; 32], data: Vec<u8>, nonce: u64) -> Self {
+        Self {
+            id,
+            sender,
+            data,
+            timestamp: Self::current_timestamp_ms(),
+            nonce,
+        }
+    }
+    
+    /// Get current timestamp in milliseconds
+    fn current_timestamp_ms() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("System time before UNIX epoch")
+            .as_millis() as u64
+    }
+
+    /// Calculate cryptographic hash of transaction
+    /// 
+    /// Uses SHA256 over all fields in deterministic order.
+    /// This hash is used for Merkle tree construction and transaction identification.
     pub fn hash(&self) -> [u8; 32] {
         use sha2::{Sha256, Digest};
         let mut hasher = Sha256::new();
@@ -61,26 +120,46 @@ impl Transaction {
         hasher.update(&self.nonce.to_le_bytes());
         hasher.finalize().into()
     }
+    
+    /// Validate transaction structure (basic sanity checks)
+    pub fn is_valid(&self) -> bool {
+        // Basic validation: ensure timestamp is not in future
+        let now = Self::current_timestamp_ms();
+        self.timestamp <= now + 60_000 // Allow 60s clock skew
+    }
 }
 
-/// Block containing a batch of validated transactions with full blockchain metadata
+/// Block represents a validated batch of transactions in the blockchain
+///
+/// Design principles:
+/// - Complete cryptographic verification (hash, Merkle root)
+/// - Chain linkage via previous_block_hash
+/// - Self-validating with verify_* methods
+/// - Immutable after creation
+///
+/// ## Cryptographic Properties
+///
+/// 1. **Block Hash**: SHA256(height + prev_hash + tx_root + state_root + timestamp)
+/// 2. **Chain Linkage**: Each block references parent via previous_block_hash
+/// 3. **Merkle Root**: Enables SPV proofs for transaction inclusion
+/// 4. **State Root**: Enables state verification and synchronization
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Block {
-    /// Block height/number in the chain
+    /// Block height/number in the chain (starts at 0 for genesis)
     pub height: u64,
-    /// Hash of this block (computed from all fields)
+    /// SHA256 hash of this block (computed from other fields)
     pub block_hash: [u8; 32],
-    /// Hash of the previous block (creates the chain)
+    /// Hash of the previous block (creates immutable chain)
     pub previous_block_hash: [u8; 32],
-    /// Transactions in this block
+    /// Transactions included in this block
     pub transactions: Vec<Transaction>,
-    /// Block creation timestamp
+    /// Block creation timestamp (Unix milliseconds)
     pub timestamp: u64,
-    /// Number of transactions (convenience field)
+    /// Number of transactions (cached for convenience)
     pub transaction_count: usize,
-    /// Merkle root of all transactions (for proof of inclusion)
+    /// Merkle root of all transaction hashes
     pub transactions_root: [u8; 32],
-    /// State root after applying this block (for state verification)
+    /// State root after applying transactions
     pub state_root: [u8; 32],
 }
 

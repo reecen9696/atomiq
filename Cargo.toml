@@ -28,6 +28,10 @@ path = "src/single_validator_main.rs"
 name = "inspect_db"
 path = "src/inspect_db_main.rs"
 
+[[bin]]
+name = "atomiq-api"
+path = "src/api_main.rs"
+
 [dependencies]
 hotstuff_rs = "0.4.0"
 tokio = { version = "1.0", features = ["full"] }
@@ -46,6 +50,13 @@ rand_core = { version = "0.6.4", features = ["getrandom"] }
 clap = { version = "4.0", features = ["derive"] }
 toml = "0.8"
 hex = "0.4"
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace", "timeout"] }
+hyper = { version = "1.0", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

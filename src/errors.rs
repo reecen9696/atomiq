@@ -3,6 +3,7 @@
 //! Enterprise-grade error handling with proper context and error chains
 
 use std::fmt;
+use std::error::Error as StdError;
 
 /// Root error type for all Atomiq operations
 #[derive(Debug)]

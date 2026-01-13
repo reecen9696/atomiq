@@ -385,6 +385,7 @@ impl BlockchainFactory {
     pub async fn create_mock() -> AtomiqResult<(Arc<AtomiqApp>, Box<dyn BlockchainHandle>)> {
         let mut config = AtomiqConfig::default();
         config.network.mode = NetworkMode::Mock;
+        config.consensus.mode = ConsensusMode::FullHotStuff;  // Mock uses FullHotStuff routing
         Self::create_blockchain(config).await
     }
 
@@ -397,10 +398,24 @@ impl BlockchainFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // Unique test counter to avoid database conflicts
+    static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn get_unique_test_db_path() -> String {
+        format!("./DB/test_db_{}", TEST_COUNTER.fetch_add(1, Ordering::SeqCst))
+    }
 
     #[tokio::test]
     async fn test_create_mock_blockchain() {
-        let result = BlockchainFactory::create_mock().await;
+        let mut config = AtomiqConfig::default();
+        config.network.mode = NetworkMode::Mock;
+        config.consensus.mode = ConsensusMode::FullHotStuff;
+        config.storage.data_directory = get_unique_test_db_path();
+        config.storage.clear_on_start = true;
+        
+        let result = BlockchainFactory::create_blockchain(config).await;
         assert!(result.is_ok());
         
         let (_app, handle) = result.unwrap();
@@ -409,16 +424,23 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_high_performance_blockchain() {
-        let result = BlockchainFactory::create_high_performance().await;
+        let mut config = AtomiqConfig::high_performance();
+        config.storage.data_directory = get_unique_test_db_path();
+        
+        let result = BlockchainFactory::create_blockchain(config).await;
         assert!(result.is_ok());
         
         let (_app, handle) = result.unwrap();
-        assert_eq!(handle.blockchain_type(), "SingleValidator");
+        // High performance uses DirectCommit mode for maximum speed
+        assert_eq!(handle.blockchain_type(), "DirectCommit");
     }
 
     #[tokio::test] 
     async fn test_create_consensus_testing_blockchain() {
-        let result = BlockchainFactory::create_consensus_testing().await;
+        let mut config = AtomiqConfig::consensus_testing();
+        config.storage.data_directory = get_unique_test_db_path();
+        
+        let result = BlockchainFactory::create_blockchain(config).await;
         assert!(result.is_ok());
         
         let (_app, handle) = result.unwrap();

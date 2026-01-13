@@ -162,7 +162,7 @@ pub enum CompressionType {
 impl Default for StorageConfig {
     fn default() -> Self {
         Self {
-            data_directory: "./blockchain_data".to_string(),
+            data_directory: "./DB/blockchain_data".to_string(),
             write_buffer_size_mb: 128,
             max_write_buffer_number: 4,
             target_file_size_mb: 128,
@@ -297,7 +297,7 @@ impl AtomiqConfig {
                 direct_commit_interval_ms: 10, // 10ms blocks
             },
             storage: StorageConfig {
-                data_directory: "./blockchain_data".to_string(),
+                data_directory: "./DB/blockchain_data".to_string(),
                 write_buffer_size_mb: 256,
                 max_write_buffer_number: 6,
                 target_file_size_mb: 256,
