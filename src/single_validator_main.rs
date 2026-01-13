@@ -85,6 +85,7 @@ impl Default for BenchmarkConfig {
                 max_block_time_ms: 1000, // 1 second for consensus to work
                 enable_state_validation: true,
                 batch_size_threshold: 50,
+                chain_id: 1,
             },
         }
     }

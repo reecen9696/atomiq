@@ -40,6 +40,7 @@ impl Default for BenchmarkConfig {
                 max_block_time_ms: 5, // Aggressive 5ms target
                 enable_state_validation: true, // Enable for real TPS
                 batch_size_threshold: 1000,
+                chain_id: 1,
             },
         }
     }

@@ -1,5 +1,6 @@
 //! Optimized RocksDB storage layer for high-performance blockchain
 
+use crate::config::{StorageConfig, CompressionType};
 use rocksdb::{DB, Options, WriteBatch};
 use hotstuff_rs::block_tree::pluggables::{KVStore, KVGet};
 use std::path::Path;
@@ -11,16 +12,40 @@ pub struct OptimizedStorage {
 }
 
 impl OptimizedStorage {
-    /// Create new optimized storage instance
+    /// Create new optimized storage instance with default settings
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, rocksdb::Error> {
+        let config = StorageConfig {
+            data_directory: path.as_ref().to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        Self::new_with_config(&config)
+    }
+
+    /// Create new optimized storage instance with custom configuration
+    pub fn new_with_config(config: &StorageConfig) -> Result<Self, rocksdb::Error> {
         let mut opts = Options::default();
         opts.create_if_missing(true);
-        opts.set_write_buffer_size(128 * 1024 * 1024); // 128MB for high throughput
-        opts.set_max_write_buffer_number(4);
-        opts.set_target_file_size_base(128 * 1024 * 1024);
-        opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
+        
+        // Apply configuration settings
+        opts.set_write_buffer_size((config.write_buffer_size_mb * 1024 * 1024) as usize);
+        opts.set_max_write_buffer_number(config.max_write_buffer_number as i32);
+        opts.set_target_file_size_base((config.target_file_size_mb * 1024 * 1024) as u64);
+        
+        // Set compression type
+        let compression = match config.compression_type {
+            CompressionType::None => rocksdb::DBCompressionType::None,
+            CompressionType::Snappy => rocksdb::DBCompressionType::Snappy,
+            CompressionType::Lz4 => rocksdb::DBCompressionType::Lz4,
+            CompressionType::Zstd => rocksdb::DBCompressionType::Zstd,
+        };
+        opts.set_compression_type(compression);
 
-        let db = DB::open(&opts, path)?;
+        // Additional performance optimizations
+        opts.set_level_compaction_dynamic_level_bytes(true);
+        opts.set_max_background_jobs(4);
+        opts.optimize_for_point_lookup(1024);
+
+        let db = DB::open(&opts, &config.data_directory)?;
         Ok(Self { 
             db: std::sync::Arc::new(db)
         })

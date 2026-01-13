@@ -23,6 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_block_time_ms: 1,
         enable_state_validation: true,
         batch_size_threshold: 1000,
+        chain_id: 1,
     };
     
     let app = Arc::new(AtomiqApp::new(config.clone()));

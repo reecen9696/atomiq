@@ -14,7 +14,6 @@ use hotstuff_rs::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, VecDeque},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, RwLock,
@@ -22,9 +21,21 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+// Export all modules for external use
+pub mod config;
+pub mod errors;
+pub mod factory;
 pub mod storage;
 pub mod network;
 pub mod metrics;
+pub mod benchmark;
+pub mod transaction_pool;
+pub mod state_manager;
+
+// Re-export commonly used types
+pub use config::{AtomiqConfig, BlockchainConfig};
+pub use errors::{AtomiqError, AtomiqResult};
+pub use factory::{BlockchainFactory, BlockchainHandle};
 
 /// Transaction with minimal required fields for performance testing
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -44,82 +55,43 @@ pub struct Block {
     pub transaction_count: usize,
 }
 
-/// Result of executing a transaction with state changes
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ExecutionResult {
-    pub tx_id: u64,
-    pub success: bool,
-    pub state_changes: Vec<StateChange>,
-}
-
-/// State change applied by a transaction
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct StateChange {
-    pub key: Vec<u8>,
-    pub value: Vec<u8>,
-}
-
-/// Blockchain configuration for performance optimization
-#[derive(Clone, Debug)]
-pub struct BlockchainConfig {
-    pub max_transactions_per_block: usize,
-    pub max_block_time_ms: u64,
-    pub enable_state_validation: bool,
-    pub batch_size_threshold: usize,
-}
-
-impl Default for BlockchainConfig {
-    fn default() -> Self {
-        Self {
-            max_transactions_per_block: 10_000,
-            max_block_time_ms: 10,
-            enable_state_validation: true,
-            batch_size_threshold: 1_000,
-        }
-    }
-}
-
-/// High-performance blockchain app with single validator consensus
+/// Refactored high-performance blockchain app with modular architecture
 #[derive(Clone)]
 pub struct AtomiqApp {
     config: BlockchainConfig,
-    transaction_pool: Arc<RwLock<VecDeque<Transaction>>>,
-    state: Arc<RwLock<HashMap<Vec<u8>, Vec<u8>>>>,
-    transaction_counter: Arc<AtomicU64>,
+    transaction_pool: crate::transaction_pool::TransactionPool,
+    state_manager: Arc<crate::state_manager::StateManager>,
     block_counter: Arc<AtomicU64>,
     last_block_time: Arc<RwLock<SystemTime>>,
 }
 
 impl AtomiqApp {
     pub fn new(config: BlockchainConfig) -> Self {
+        let transaction_pool = crate::transaction_pool::TransactionPool::new_with_config(
+            config.clone().into()
+        );
+        let state_manager = Arc::new(crate::state_manager::StateManager::new_with_config(
+            config.clone().into()
+        ));
+        
         Self {
             config,
-            transaction_pool: Arc::new(RwLock::new(VecDeque::new())),
-            state: Arc::new(RwLock::new(HashMap::new())),
-            transaction_counter: Arc::new(AtomicU64::new(0)),
+            transaction_pool,
+            state_manager,
             block_counter: Arc::new(AtomicU64::new(0)),
             last_block_time: Arc::new(RwLock::new(SystemTime::now())),
         }
     }
 
     /// Submit transaction to pool with auto-assigned ID and timestamp
-    pub fn submit_transaction(&self, mut transaction: Transaction) -> u64 {
-        transaction.id = self.transaction_counter.fetch_add(1, Ordering::SeqCst);
-        transaction.timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
-
-        if let Ok(mut pool) = self.transaction_pool.write() {
-            pool.push_back(transaction.clone());
-        }
-
-        transaction.id
+    pub fn submit_transaction(&self, transaction: Transaction) -> AtomiqResult<u64> {
+        self.transaction_pool.submit_transaction(transaction)
+            .map_err(|e| e.into())
     }
 
     /// Get current transaction pool size  
     pub fn pool_size(&self) -> usize {
-        self.transaction_pool.read().map(|pool| pool.len()).unwrap_or(0)
+        self.transaction_pool.pool_size()
     }
 
     /// Get current performance metrics
@@ -130,24 +102,27 @@ impl AtomiqApp {
             .unwrap_or_default()
             .as_millis() as u64;
 
+        let pool_stats = self.transaction_pool.get_stats();
+        let state_stats = self.state_manager.get_state_stats();
+
         BlockchainMetrics {
-            total_transactions: self.transaction_counter.load(Ordering::SeqCst),
+            total_transactions: pool_stats.transactions_processed,
             total_blocks: self.block_counter.load(Ordering::SeqCst),
-            pending_transactions: self.pool_size() as u64,
+            pending_transactions: pool_stats.total_transactions,
             time_since_last_block_ms: time_since_last_block,
+            state_entries: state_stats.total_entries,
+            state_size_bytes: state_stats.total_size_bytes,
         }
     }
 
     /// Drain transactions from pool for block creation
     pub fn drain_transaction_pool(&self) -> Vec<Transaction> {
-        let mut pool = self.transaction_pool.write().unwrap();
-        let batch_size = std::cmp::min(self.config.max_transactions_per_block, pool.len());
-        pool.drain(0..batch_size).collect()
+        self.transaction_pool.drain_transactions(self.config.max_transactions_per_block)
     }
 
     /// Access to transaction counter for monitoring  
-    pub fn transaction_counter(&self) -> &Arc<AtomicU64> {
-        &self.transaction_counter
+    pub fn transaction_counter(&self) -> Arc<AtomicU64> {
+        self.transaction_pool.transaction_counter().clone()
     }
 
     /// Access to block counter for monitoring
@@ -155,173 +130,9 @@ impl AtomiqApp {
         &self.block_counter
     }
 
-    /// Execute batch of transactions with validation and state updates
-    pub fn execute_transactions(&self, transactions: &[Transaction]) -> (Vec<ExecutionResult>, AppStateUpdates) {
-        if !self.config.enable_state_validation {
-            return self.execute_fast_path(transactions);
-        }
-        
-        self.execute_with_validation(transactions)
-    }
-
-    /// Fast execution path without state validation  
-    fn execute_fast_path(&self, transactions: &[Transaction]) -> (Vec<ExecutionResult>, AppStateUpdates) {
-        let results = transactions
-            .iter()
-            .map(|tx| ExecutionResult {
-                tx_id: tx.id,
-                success: true,
-                state_changes: vec![],
-            })
-            .collect();
-        
-        (results, AppStateUpdates::new())
-    }
-
-    /// Execute with full validation and state tracking
-    fn execute_with_validation(&self, transactions: &[Transaction]) -> (Vec<ExecutionResult>, AppStateUpdates) {
-        let mut results = Vec::with_capacity(transactions.len());
-        let mut app_state_updates = AppStateUpdates::new();
-        let mut state = self.state.write().unwrap();
-        
-        for tx in transactions {
-            let result = self.execute_single_transaction(tx, &mut state, &mut app_state_updates);
-            results.push(result);
-        }
-        
-        (results, app_state_updates)
-    }
-
-    /// Execute single transaction with nonce validation
-    fn execute_single_transaction(
-        &self,
-        tx: &Transaction,
-        state: &mut HashMap<Vec<u8>, Vec<u8>>,
-        app_state_updates: &mut AppStateUpdates,
-    ) -> ExecutionResult {
-        // Validate transaction structure
-        if tx.data.is_empty() {
-            return ExecutionResult {
-                tx_id: tx.id,
-                success: false,
-                state_changes: vec![],
-            };
-        }
-
-        // Validate nonce
-        let nonce_key = self.build_nonce_key(&tx.sender);
-        let current_nonce = self.get_current_nonce(state, &nonce_key);
-        
-        if tx.nonce != current_nonce + 1 {
-            return ExecutionResult {
-                tx_id: tx.id,
-                success: false,
-                state_changes: vec![],
-            };
-        }
-
-        // Apply state changes
-        let changes = self.apply_transaction_state_changes(tx, state, &nonce_key, current_nonce + 1);
-        
-        // Update app state for HotStuff-rs
-        for change in &changes {
-            app_state_updates.insert(change.key.clone(), change.value.clone());
-        }
-
-        ExecutionResult {
-            tx_id: tx.id,
-            success: true,
-            state_changes: changes,
-        }
-    }
-
-    /// Build nonce key for sender
-    fn build_nonce_key(&self, sender: &[u8; 32]) -> Vec<u8> {
-        let mut key = Vec::with_capacity(38); // "nonce_" + 32 bytes
-        key.extend_from_slice(b"nonce_");
-        key.extend_from_slice(sender);
-        key
-    }
-
-    /// Get current nonce for sender
-    fn get_current_nonce(&self, state: &HashMap<Vec<u8>, Vec<u8>>, nonce_key: &[u8]) -> u64 {
-        state
-            .get(nonce_key)
-            .and_then(|bytes| {
-                if bytes.len() == 8 {
-                    let array: Result<[u8; 8], _> = bytes.as_slice().try_into();
-                    array.ok().map(u64::from_le_bytes)
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(0)
-    }
-
-    /// Apply state changes for successful transaction
-    fn apply_transaction_state_changes(
-        &self,
-        tx: &Transaction,
-        state: &mut HashMap<Vec<u8>, Vec<u8>>,
-        nonce_key: &[u8],
-        new_nonce: u64,
-    ) -> Vec<StateChange> {
-        let mut changes = Vec::new();
-
-        // Update nonce
-        let nonce_bytes = new_nonce.to_le_bytes().to_vec();
-        state.insert(nonce_key.to_vec(), nonce_bytes.clone());
-        changes.push(StateChange {
-            key: nonce_key.to_vec(),
-            value: nonce_bytes,
-        });
-
-        // Store transaction data
-        let tx_key = self.build_transaction_key(tx.id);
-        state.insert(tx_key.clone(), tx.data.clone());
-        changes.push(StateChange {
-            key: tx_key,
-            value: tx.data.clone(),
-        });
-
-        changes
-    }
-
-    /// Build transaction storage key
-    fn build_transaction_key(&self, tx_id: u64) -> Vec<u8> {
-        let mut key = Vec::with_capacity(11); // "tx_" + 8 bytes
-        key.extend_from_slice(b"tx_");
-        key.extend_from_slice(&tx_id.to_le_bytes());
-        key
-    }
-
-    /// Validate block transactions without state modification
-    fn validate_block_transactions(&self, transactions: &[Transaction]) -> bool {
-        if !self.config.enable_state_validation {
-            return true;
-        }
-        
-        let state = self.state.read().unwrap();
-        
-        for tx in transactions {
-            if !self.validate_single_transaction(tx, &state) {
-                return false;
-            }
-        }
-        
-        true
-    }
-
-    /// Validate single transaction against current state
-    fn validate_single_transaction(&self, tx: &Transaction, state: &HashMap<Vec<u8>, Vec<u8>>) -> bool {
-        if tx.data.is_empty() {
-            return false;
-        }
-        
-        let nonce_key = self.build_nonce_key(&tx.sender);
-        let current_nonce = self.get_current_nonce(state, &nonce_key);
-        
-        tx.nonce == current_nonce + 1
+    /// Execute batch of transactions using state manager
+    pub fn execute_transactions(&self, transactions: &[Transaction]) -> (Vec<crate::state_manager::ExecutionResult>, AppStateUpdates) {
+        self.state_manager.execute_transactions(transactions)
     }
 
     /// Create a block from transactions
@@ -374,7 +185,7 @@ impl AtomiqApp {
             return Err("Block hash mismatch".to_string());
         }
 
-        if !self.validate_block_transactions(&block.transactions) {
+        if !self.state_manager.validate_block_transactions(&block.transactions) {
             return Err("Transaction validation failed".to_string());
         }
 
@@ -383,11 +194,7 @@ impl AtomiqApp {
 
     /// Process valid block and execute transactions
     fn process_valid_block(&self, block: &Block) -> ValidateBlockResponse {
-        let (_, app_state_updates) = if self.config.enable_state_validation {
-            self.execute_transactions(&block.transactions)
-        } else {
-            (Vec::new(), AppStateUpdates::new())
-        };
+        let (_, app_state_updates) = self.state_manager.execute_transactions(&block.transactions);
 
         ValidateBlockResponse::Valid {
             app_state_updates: Some(app_state_updates),
@@ -444,13 +251,15 @@ impl<K: KVStore> App<K> for AtomiqApp {
     }
 }
 
-/// Real-time performance metrics
+/// Enhanced performance metrics with additional state information
 #[derive(Debug, Clone)]
 pub struct BlockchainMetrics {
     pub total_transactions: u64,
     pub total_blocks: u64,
     pub pending_transactions: u64,
     pub time_since_last_block_ms: u64,
+    pub state_entries: u64,
+    pub state_size_bytes: u64,
 }
 
 impl BlockchainMetrics {
@@ -462,6 +271,11 @@ impl BlockchainMetrics {
         
         // Rough calculation assuming 10ms average block time
         self.total_transactions as f64 / self.total_blocks as f64 * 100.0
+    }
+
+    /// Calculate state utilization metrics
+    pub fn state_utilization_mb(&self) -> f64 {
+        self.state_size_bytes as f64 / (1024.0 * 1024.0)
     }
 }
 
@@ -497,7 +311,7 @@ mod tests {
         };
         
         let tx_id = app.submit_transaction(tx);
-        assert_eq!(tx_id, 1);
+        assert!(tx_id.is_ok());
         assert_eq!(app.pool_size(), 1);
     }
 
@@ -510,6 +324,7 @@ mod tests {
         assert_eq!(metrics.total_transactions, 0);
         assert_eq!(metrics.total_blocks, 0);
         assert_eq!(metrics.pending_transactions, 0);
+        assert_eq!(metrics.state_entries, 0);
     }
 
     #[test]
@@ -519,5 +334,15 @@ mod tests {
         assert_eq!(config.max_block_time_ms, 10);
         assert!(config.enable_state_validation);
         assert_eq!(config.batch_size_threshold, 1_000);
+    }
+
+    #[test]
+    fn test_enhanced_metrics() {
+        let config = BlockchainConfig::default();
+        let app = AtomiqApp::new(config);
+        let metrics = app.get_metrics();
+        
+        assert_eq!(metrics.estimated_tps(), 0.0); // No blocks yet
+        assert_eq!(metrics.state_utilization_mb(), 0.0); // No state yet
     }
 }
