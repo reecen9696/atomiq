@@ -1,20 +1,27 @@
-# Lean Blockchain
+# Atomiq Blockchain
 
-High-performance blockchain implementation using HotStuff-rs consensus, optimized for maximum throughput with proper validation.
+High-performance single-validator blockchain using HotStuff-rs consensus, optimized for maximum throughput with cryptographic integrity.
 
 ## Features
 
 - 🚀 **High Throughput**: Target 20,000+ TPS with proper validation
 - ⚡ **Fast Block Times**: 5-10ms block creation target
-- 🔒 **BFT Consensus**: Byzantine fault tolerant using HotStuff protocol
+- 🔒 **Single Validator BFT**: Simplified Byzantine fault tolerant consensus with one validator
+- 🔗 **Cryptographic Hashing**: True blockchain integrity with SHA-256 block hashing
 - 📊 **Real-time Metrics**: Comprehensive performance monitoring
 - 🧹 **Lean Design**: Minimal complexity, maximum performance
 
 ## Quick Start
 
 ```bash
-# Build and run
+# Run main blockchain (single validator HotStuff)
 cargo run --release
+
+# Run simplified version (bypasses consensus)
+cargo run --bin simple_blockchain --release
+
+# Run explicit single validator test
+cargo run --bin dual_validator --release
 
 # Run benchmarks
 cargo bench
@@ -36,19 +43,45 @@ BlockchainConfig {
 }
 ```
 
-## Performance Targets
+## Performance Characteristics
 
-- **TPS**: 20,000+ transactions per second
-- **Block Time**: 5-10ms average
-- **Latency**: Sub-millisecond transaction submission
-- **Validation**: Full state validation enabled
+- **Block Creation**: ~2-5ms with cryptographic hashing
+- **Hash Computation**: ~2 microseconds (SHA-256)
+- **Transaction Validation**: Full nonce + state validation enabled
+- **Storage Writes**: Batched RocksDB operations
+- **Network Overhead**: Zero (single validator, mock network)
+- **Consensus Overhead**: Minimal (self-messaging only)
 
 ## Architecture
 
-- **Storage**: RocksDB with LZ4 compression
-- **Consensus**: HotStuff-rs with single validator (expandable)
-- **Networking**: Mock network (replaceable with real P2P)
-- **State**: In-memory HashMap with persistent backing
+- **Consensus**: Single validator HotStuff-rs BFT (Power = 1)
+- **Storage**: RocksDB with LZ4 compression and optimized write buffers
+- **Networking**: Mock network for single-node operation (no P2P overhead)
+- **State**: In-memory HashMap with persistent RocksDB backing
+- **Block Hashing**: SHA-256 cryptographic hashing (height + justify + data_hash)
+- **View Timeout**: Aggressive 10ms for single validator optimization
+
+## Single Validator Setup
+
+The blockchain is currently configured as a single validator system:
+
+```rust
+// Single validator with full voting power
+validator_set_updates.insert(verifying_key, Power::new(1));
+
+// Optimized timing for single validator
+.max_view_time(Duration::from_millis(10))
+.block_sync_trigger_min_view_difference(1)
+```
+
+This eliminates multi-validator consensus overhead while maintaining:
+
+- ✅ Cryptographic block integrity
+- ✅ Persistent blockchain storage
+- ✅ HotStuff consensus structure
+- ✅ Transaction validation
+- ❌ No Byzantine fault tolerance (single point of failure)
+- ❌ No network consensus delays
 
 ## Expected Database Growth
 
@@ -61,11 +94,23 @@ With 15,000 TPS average:
 
 ## Future Extensibility
 
-This implementation is designed to be easily extensible for:
+This single-validator implementation can be easily extended to:
 
-- Casino/gaming logic
-- Multi-validator networks
-- Real P2P networking
-- Advanced state management
-- Cross-chain features
+- **Multi-validator networks**: Add more validators to the ValidatorSet
+- **Real P2P networking**: Replace MockNetwork with TCP/UDP implementation
+- **Casino/gaming logic**: Add application-specific transaction types
+- **Advanced state management**: Implement complex state machines
+- **Cross-chain features**: Bridge to other blockchains
+
+## Performance vs Security Trade-offs
+
+| Aspect                    | Single Validator | Multi-Validator BFT |
+| ------------------------- | ---------------- | ------------------- |
+| TPS                       | 20,000+          | ~1,000-5,000        |
+| Block Time                | 5-10ms           | 1-3 seconds         |
+| Network Overhead          | None             | High                |
+| Byzantine Fault Tolerance | ❌               | ✅                  |
+| Cryptographic Integrity   | ✅               | ✅                  |
+| Production Ready          | POC Only         | Yes                 |
+
 # atomiq

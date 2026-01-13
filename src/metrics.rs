@@ -1,9 +1,10 @@
-//! Performance monitoring and metrics collection
+//! Real-time performance monitoring and metrics collection
 
 use std::time::{Duration, Instant};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Real-time performance metrics collector
 pub struct PerformanceMonitor {
     start_time: Instant,
     transaction_count: Arc<AtomicU64>,
@@ -23,21 +24,24 @@ impl PerformanceMonitor {
         }
     }
 
+    /// Record processed transactions
     pub fn record_transactions(&self, count: u64) {
         self.transaction_count.fetch_add(count, Ordering::SeqCst);
     }
 
+    /// Record completed block
     pub fn record_block(&self) {
         self.block_count.fetch_add(1, Ordering::SeqCst);
     }
 
+    /// Calculate current transactions per second
     pub fn calculate_tps(&self) -> f64 {
         let now = Instant::now();
         let mut last_time = self.last_tps_calculation.write().unwrap();
         let time_diff = now.duration_since(*last_time);
         
         if time_diff < Duration::from_secs(1) {
-            return 0.0; // Too early to calculate
+            return 0.0; // Too early to calculate accurately
         }
 
         let current_tx_count = self.transaction_count.load(Ordering::SeqCst);
@@ -53,10 +57,12 @@ impl PerformanceMonitor {
         tps
     }
 
+    /// Get total runtime since start
     pub fn total_runtime(&self) -> Duration {
         self.start_time.elapsed()
     }
 
+    /// Calculate average TPS over entire runtime
     pub fn average_tps(&self) -> f64 {
         let total_seconds = self.total_runtime().as_secs_f64();
         if total_seconds < 1.0 {

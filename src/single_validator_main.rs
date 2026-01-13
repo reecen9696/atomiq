@@ -1,9 +1,9 @@
-//! Single Validator Lean Blockchain - HotStuff BFT with 1 Validator
+//! Single Validator Atomiq Blockchain - HotStuff BFT with 1 Validator
 //! 
-//! Fixed version based on HotStuff-rs test patterns
+//! Clean implementation based on HotStuff-rs patterns
 
-use lean_blockchain::{
-    LeanBlockchainApp, BlockchainConfig, Transaction,
+use atomiq::{
+    AtomiqApp, BlockchainConfig, Transaction,
     storage::OptimizedStorage,
 };
 use hotstuff_rs::{
@@ -17,7 +17,6 @@ use hotstuff_rs::{
     networking::{messages::Message, network::Network},
 };
 use std::{
-    collections::HashMap,
     sync::{
         mpsc::{self, Receiver, Sender, TryRecvError},
         Arc, Mutex,
@@ -25,7 +24,7 @@ use std::{
     time::{Duration, Instant},
     fs,
 };
-use tokio::{time::sleep, task};
+use tokio::time::sleep;
 use ed25519_dalek::VerifyingKey;
 use rand_core::OsRng;
 
@@ -95,7 +94,7 @@ impl Default for BenchmarkConfig {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
     
-    println!("🚀 Single Validator Lean Blockchain Test");
+    println!("🚀 Single Validator Atomiq Blockchain Test");
     println!("========================================");
     
     // Clean up old data
@@ -146,10 +145,10 @@ async fn start_single_validator(
     network: SingleValidatorNetwork,
     init_vs_updates: ValidatorSetUpdates,
     config: BlockchainConfig,
-) -> Result<Arc<LeanBlockchainApp>, Box<dyn std::error::Error>> {
+) -> Result<Arc<AtomiqApp>, Box<dyn std::error::Error>> {
     
     // Create app
-    let app = Arc::new(LeanBlockchainApp::new(config.clone()));
+    let app = Arc::new(AtomiqApp::new(config.clone()));
     
     // Create storage 
     let storage_path = "./blockchain_data_single";
@@ -202,7 +201,7 @@ async fn start_single_validator(
 }
 
 async fn run_single_validator_benchmark(
-    validator: Arc<LeanBlockchainApp>,
+    validator: Arc<AtomiqApp>,
     config: BenchmarkConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("\n🏁 Starting Single Validator Throughput Benchmark");

@@ -1,8 +1,8 @@
 //! Simple High-Performance Blockchain Demo
 //! 
-//! This bypasses HotStuff for pure throughput testing
+//! Bypasses HotStuff consensus for pure throughput testing
 
-use lean_blockchain::{LeanBlockchainApp, BlockchainConfig, Transaction};
+use atomiq::{AtomiqApp, BlockchainConfig, Transaction};
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -25,7 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         batch_size_threshold: 1000,
     };
     
-    let app = Arc::new(LeanBlockchainApp::new(config.clone()));
+    let app = Arc::new(AtomiqApp::new(config.clone()));
     
     println!("✅ Simple blockchain app created");
     println!("📊 Config: {} max tx/block, {}ms target block time", 
@@ -77,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn run_throughput_test(app: Arc<LeanBlockchainApp>) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_throughput_test(app: Arc<AtomiqApp>) -> Result<(), Box<dyn std::error::Error>> {
     let total_transactions = 100_000;
     let batch_size = 100;
     let concurrent_submitters = 4;

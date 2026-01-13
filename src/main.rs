@@ -1,9 +1,9 @@
-//! Lean Blockchain - High Performance Single Node Blockchain
+//! Atomiq - High Performance Single Node Blockchain
 //! 
-//! Focused on maximum TPS measurement with proper validation.
+//! Optimized for maximum TPS measurement with proper validation.
 
-use lean_blockchain::{
-    LeanBlockchainApp, BlockchainConfig, Transaction,
+use atomiq::{
+    AtomiqApp, BlockchainConfig, Transaction,
     network::MockNetwork, metrics::PerformanceMonitor, storage::OptimizedStorage,
 };
 use hotstuff_rs::{
@@ -58,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let benchmark_config = BenchmarkConfig::default();
     
     // Start blockchain
-    let blockchain = start_blockchain(benchmark_config.blockchain_config.clone()).await?;
+    let (blockchain, _replica) = start_blockchain(benchmark_config.blockchain_config.clone()).await?;
     
     // Wait for blockchain to initialize
     sleep(Duration::from_millis(100)).await;
@@ -69,14 +69,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn start_blockchain(config: BlockchainConfig) -> Result<Arc<LeanBlockchainApp>, Box<dyn std::error::Error>> {
+async fn start_blockchain(config: BlockchainConfig) -> Result<(Arc<AtomiqApp>, hotstuff_rs::replica::Replica<OptimizedStorage>), Box<dyn std::error::Error>> {
     // Create signing key
     let mut rng = rand::rngs::OsRng;
     let signing_key = SigningKey::generate(&mut rng);
     let verifying_key = signing_key.verifying_key();
     
     // Create app
-    let app = Arc::new(LeanBlockchainApp::new(config.clone()));
+    let app = Arc::new(AtomiqApp::new(config.clone()));
     
     // Create network (mock for single node)
     let network = MockNetwork::new(verifying_key);
@@ -112,11 +112,11 @@ async fn start_blockchain(config: BlockchainConfig) -> Result<Arc<LeanBlockchain
         .block_sync_trigger_timeout(Duration::from_secs(5))
         .progress_msg_buffer_capacity(BufferSize::new(10240))
         .epoch_length(EpochLength::new(100))
-        .max_view_time(Duration::from_millis(10)) // Very aggressive for single validator
+        .max_view_time(Duration::from_millis(50)) // Increased for better single validator timing
         .log_events(true) // Enable to see what's happening
         .build();
 
-    // Start replica and keep handle for interaction
+    // Start replica and keep handle alive to maintain consensus
     let replica = ReplicaSpec::builder()
         .app((*app).clone())
         .network(network)
@@ -161,11 +161,11 @@ async fn start_blockchain(config: BlockchainConfig) -> Result<Arc<LeanBlockchain
         }
     });
     
-    Ok(app)
+    Ok((app, replica))
 }
 
 async fn run_throughput_benchmark(
-    blockchain: &Arc<LeanBlockchainApp>,
+    blockchain: &Arc<AtomiqApp>,
     config: &BenchmarkConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let monitor = Arc::new(PerformanceMonitor::new());
@@ -245,7 +245,7 @@ async fn run_throughput_benchmark(
 }
 
 async fn submit_transactions(
-    blockchain: Arc<LeanBlockchainApp>,
+    blockchain: Arc<AtomiqApp>,
     monitor: Arc<PerformanceMonitor>,
     submitter_id: usize,
     transaction_count: usize,
@@ -287,7 +287,7 @@ async fn submit_transactions(
 }
 
 async fn monitor_progress(
-    blockchain: Arc<LeanBlockchainApp>,
+    blockchain: Arc<AtomiqApp>,
     monitor: Arc<PerformanceMonitor>,
 ) {
     let mut last_metrics = blockchain.get_metrics();
@@ -316,7 +316,7 @@ async fn monitor_progress(
     }
 }
 
-async fn wait_for_processing_completion(blockchain: &Arc<LeanBlockchainApp>, target_transactions: usize) {
+async fn wait_for_processing_completion(blockchain: &Arc<AtomiqApp>, target_transactions: usize) {
     loop {
         let metrics = blockchain.get_metrics();
         
