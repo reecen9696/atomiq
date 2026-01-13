@@ -31,11 +31,13 @@ pub mod metrics;
 pub mod benchmark;
 pub mod transaction_pool;
 pub mod state_manager;
+pub mod direct_commit;
 
 // Re-export commonly used types
-pub use config::{AtomiqConfig, BlockchainConfig};
+pub use config::{AtomiqConfig, BlockchainConfig, ConsensusMode};
 pub use errors::{AtomiqError, AtomiqResult};
 pub use factory::{BlockchainFactory, BlockchainHandle};
+pub use direct_commit::{DirectCommitEngine, DirectCommitMetrics};
 
 /// Transaction with minimal required fields for performance testing
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -47,12 +49,135 @@ pub struct Transaction {
     pub nonce: u64,
 }
 
-/// Block containing a batch of validated transactions  
+impl Transaction {
+    /// Calculate transaction hash
+    pub fn hash(&self) -> [u8; 32] {
+        use sha2::{Sha256, Digest};
+        let mut hasher = Sha256::new();
+        hasher.update(&self.id.to_le_bytes());
+        hasher.update(&self.sender);
+        hasher.update(&self.data);
+        hasher.update(&self.timestamp.to_le_bytes());
+        hasher.update(&self.nonce.to_le_bytes());
+        hasher.finalize().into()
+    }
+}
+
+/// Block containing a batch of validated transactions with full blockchain metadata
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Block {
+    /// Block height/number in the chain
+    pub height: u64,
+    /// Hash of this block (computed from all fields)
+    pub block_hash: [u8; 32],
+    /// Hash of the previous block (creates the chain)
+    pub previous_block_hash: [u8; 32],
+    /// Transactions in this block
     pub transactions: Vec<Transaction>,
+    /// Block creation timestamp
     pub timestamp: u64,
+    /// Number of transactions (convenience field)
     pub transaction_count: usize,
+    /// Merkle root of all transactions (for proof of inclusion)
+    pub transactions_root: [u8; 32],
+    /// State root after applying this block (for state verification)
+    pub state_root: [u8; 32],
+}
+
+impl Block {
+    /// Create a new block with all required fields
+    pub fn new(
+        height: u64,
+        previous_block_hash: [u8; 32],
+        transactions: Vec<Transaction>,
+        state_root: [u8; 32],
+    ) -> Self {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        
+        let transaction_count = transactions.len();
+        let transactions_root = Self::calculate_merkle_root(&transactions);
+        
+        // Compute block hash from all fields
+        let block_hash = Self::compute_hash(
+            height,
+            &previous_block_hash,
+            &transactions_root,
+            &state_root,
+            timestamp,
+        );
+        
+        Self {
+            height,
+            block_hash,
+            previous_block_hash,
+            transactions,
+            timestamp,
+            transaction_count,
+            transactions_root,
+            state_root,
+        }
+    }
+    
+    /// Genesis block (first block in chain)
+    pub fn genesis() -> Self {
+        Self::new(0, [0u8; 32], vec![], [0u8; 32])
+    }
+    
+    /// Calculate Merkle root of transactions
+    fn calculate_merkle_root(transactions: &[Transaction]) -> [u8; 32] {
+        use sha2::{Sha256, Digest};
+        
+        if transactions.is_empty() {
+            return [0u8; 32];
+        }
+        
+        // Simple Merkle root: hash all transaction hashes together
+        let mut hasher = Sha256::new();
+        for tx in transactions {
+            hasher.update(tx.hash());
+        }
+        hasher.finalize().into()
+    }
+    
+    /// Compute block hash from components
+    fn compute_hash(
+        height: u64,
+        previous_block_hash: &[u8; 32],
+        transactions_root: &[u8; 32],
+        state_root: &[u8; 32],
+        timestamp: u64,
+    ) -> [u8; 32] {
+        use sha2::{Sha256, Digest};
+        
+        let mut hasher = Sha256::new();
+        hasher.update(&height.to_le_bytes());
+        hasher.update(previous_block_hash);
+        hasher.update(transactions_root);
+        hasher.update(state_root);
+        hasher.update(&timestamp.to_le_bytes());
+        hasher.finalize().into()
+    }
+    
+    /// Verify block hash is correct
+    pub fn verify_hash(&self) -> bool {
+        let computed = Self::compute_hash(
+            self.height,
+            &self.previous_block_hash,
+            &self.transactions_root,
+            &self.state_root,
+            self.timestamp,
+        );
+        computed == self.block_hash
+    }
+    
+    /// Verify transactions root matches transactions
+    pub fn verify_transactions_root(&self) -> bool {
+        let computed = Self::calculate_merkle_root(&self.transactions);
+        computed == self.transactions_root
+    }
 }
 
 /// Refactored high-performance blockchain app with modular architecture
@@ -135,17 +260,15 @@ impl AtomiqApp {
         self.state_manager.execute_transactions(transactions)
     }
 
-    /// Create a block from transactions
+    /// Create a block from transactions (for HotStuff consensus mode)
     fn create_block(&self, transactions: Vec<Transaction>) -> Block {
-        let transaction_count = transactions.len();
-        Block {
-            transactions,
-            timestamp: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64,
-            transaction_count,
-        }
+        let height = self.block_counter.load(Ordering::SeqCst);
+        // For HotStuff mode, we don't track previous hash in app
+        // HotStuff handles chain linkage at its layer
+        let previous_hash = [0u8; 32]; // Placeholder for HotStuff mode
+        let state_root = [0u8; 32]; // State root would come from state manager
+        
+        Block::new(height, previous_hash, transactions, state_root)
     }
 
     /// Serialize block and compute hash

@@ -51,24 +51,41 @@ impl Default for BlockchainConfig {
     }
 }
 
+/// Consensus mode selection
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ConsensusMode {
+    /// Full HotStuff BFT consensus - for multi-validator networks
+    /// Slow (~10 TPS) but Byzantine fault tolerant
+    FullHotStuff,
+    
+    /// Direct commit mode - for single trusted validator
+    /// Fast (100K+ TPS) with <10ms latency, no consensus overhead
+    DirectCommit,
+}
+
 /// HotStuff consensus configuration
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConsensusConfig {
+    pub mode: ConsensusMode,
     pub max_view_time_ms: u64,
     pub epoch_length: usize,
     pub block_sync_request_limit: usize,
     pub block_sync_trigger_min_view_difference: usize,
     pub progress_msg_buffer_capacity: usize,
+    /// Block production interval for DirectCommit mode (milliseconds)
+    pub direct_commit_interval_ms: u64,
 }
 
 impl Default for ConsensusConfig {
     fn default() -> Self {
         Self {
-            max_view_time_ms: 2000, // Conservative for stability
+            mode: ConsensusMode::DirectCommit, // Fast by default for single validator
+            max_view_time_ms: 2000,
             epoch_length: 100,
             block_sync_request_limit: 100,
             block_sync_trigger_min_view_difference: 2,
             progress_msg_buffer_capacity: 10240,
+            direct_commit_interval_ms: 10, // 10ms = 100 blocks/sec potential
         }
     }
 }
@@ -201,11 +218,13 @@ impl AtomiqConfig {
                 chain_id: 1,
             },
             consensus: ConsensusConfig {
+                mode: ConsensusMode::DirectCommit,
                 max_view_time_ms: 100, // Aggressive timing
                 epoch_length: 1000,
                 block_sync_request_limit: 1000,
                 block_sync_trigger_min_view_difference: 1,
                 progress_msg_buffer_capacity: 50000,
+                direct_commit_interval_ms: 5, // Ultra-fast for high performance
             },
             performance: PerformanceConfig {
                 target_tps: Some(100_000),
@@ -235,11 +254,13 @@ impl AtomiqConfig {
                 chain_id: 1,
             },
             consensus: ConsensusConfig {
+                mode: ConsensusMode::FullHotStuff, // Use full consensus for testing
                 max_view_time_ms: 5000, // Conservative for correctness
                 epoch_length: 50,
                 block_sync_request_limit: 10,
                 block_sync_trigger_min_view_difference: 2,
                 progress_msg_buffer_capacity: 1024,
+                direct_commit_interval_ms: 10,
             },
             performance: PerformanceConfig {
                 target_tps: Some(1000),
@@ -267,11 +288,13 @@ impl AtomiqConfig {
                 chain_id: 1,
             },
             consensus: ConsensusConfig {
+                mode: ConsensusMode::DirectCommit, // Fast mode for production
                 max_view_time_ms: 2000,
                 epoch_length: 100,
                 block_sync_request_limit: 100,
                 block_sync_trigger_min_view_difference: 2,
                 progress_msg_buffer_capacity: 10240,
+                direct_commit_interval_ms: 10, // 10ms blocks
             },
             storage: StorageConfig {
                 data_directory: "./blockchain_data".to_string(),

@@ -13,6 +13,10 @@ name = "atomiq-unified"
 path = "src/main_unified.rs"
 
 [[bin]]
+name = "atomiq-fast"
+path = "src/fast_main.rs"
+
+[[bin]]
 name = "simple_blockchain"
 path = "src/simple_main.rs"
 
@@ -41,6 +45,7 @@ ed25519-dalek = { version = "2.0.0", features = ["rand_core"] }
 rand_core = { version = "0.6.4", features = ["getrandom"] }
 clap = { version = "4.0", features = ["derive"] }
 toml = "0.8"
+hex = "0.4"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

@@ -3,9 +3,10 @@
 //! Centralizes the complex initialization logic that's duplicated across binaries
 
 use crate::{
-    config::{AtomiqConfig, NetworkMode},
+    config::{AtomiqConfig, NetworkMode, ConsensusMode},
     errors::{AtomiqError, AtomiqResult, BlockchainError, StorageError},
     storage::OptimizedStorage,
+    direct_commit::DirectCommitEngine,
     AtomiqApp,
 };
 use hotstuff_rs::{
@@ -22,6 +23,7 @@ use std::{
     sync::{mpsc, Arc, Mutex},
     fs,
 };
+use tokio::sync::RwLock;
 use rand_core::OsRng;
 
 /// Network wrapper enum to handle different network implementations
@@ -89,6 +91,55 @@ impl BlockchainFactory {
             println!("📦 Production mode: Preserving existing blockchain data at {}", config.storage.data_directory);
         }
 
+        // Route to appropriate consensus mode
+        match config.consensus.mode {
+            ConsensusMode::DirectCommit => Self::create_direct_commit(config).await,
+            ConsensusMode::FullHotStuff => Self::create_full_hotstuff(config).await,
+        }
+    }
+
+    /// Create DirectCommit mode blockchain (fast, no consensus)
+    async fn create_direct_commit(
+        config: AtomiqConfig,
+    ) -> AtomiqResult<(Arc<AtomiqApp>, Box<dyn BlockchainHandle>)> {
+        let app = Arc::new(RwLock::new(AtomiqApp::new(config.blockchain.clone())));
+        let storage = Arc::new(Self::create_storage(&config)?);
+        
+        let engine = Arc::new(DirectCommitEngine::new(
+            app.clone(),
+            storage.clone(),
+            config.clone(),
+        ));
+
+        // Start the engine in the background
+        let engine_clone = engine.clone();
+        tokio::spawn(async move {
+            engine_clone.start().await;
+        });
+
+        // Brief initialization delay
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        let handle = Box::new(DirectCommitHandle {
+            app: app.clone(),
+            engine: engine.clone(),
+        }) as Box<dyn BlockchainHandle>;
+
+        // Return Arc<RwLock<AtomiqApp>> wrapped to match the expected signature
+        // We need to convert Arc<RwLock<AtomiqApp>> to Arc<AtomiqApp>
+        // For now, we'll create a new Arc with a clone
+        let app_for_return = {
+            let app_read = app.read().await;
+            Arc::new(app_read.clone())
+        };
+
+        Ok((app_for_return, handle))
+    }
+
+    /// Create FullHotStuff mode blockchain (BFT consensus)
+    async fn create_full_hotstuff(
+        config: AtomiqConfig,
+    ) -> AtomiqResult<(Arc<AtomiqApp>, Box<dyn BlockchainHandle>)> {
         // Create components
         let (signing_key, verifying_key) = Self::create_keypair();
         let app = Arc::new(AtomiqApp::new(config.blockchain.clone()));
@@ -217,6 +268,23 @@ pub trait BlockchainHandle: Send + Sync {
     
     /// Gracefully shutdown the blockchain
     fn shutdown(&mut self) -> AtomiqResult<()>;
+}
+
+/// Handle for DirectCommit mode blockchain
+pub struct DirectCommitHandle {
+    app: Arc<RwLock<AtomiqApp>>,
+    engine: Arc<DirectCommitEngine>,
+}
+
+impl BlockchainHandle for DirectCommitHandle {
+    fn blockchain_type(&self) -> &'static str {
+        "DirectCommit"
+    }
+
+    fn shutdown(&mut self) -> AtomiqResult<()> {
+        self.engine.stop();
+        Ok(())
+    }
 }
 
 /// Handle for single validator blockchain
