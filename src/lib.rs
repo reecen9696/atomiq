@@ -1,13 +1,12 @@
-//! Atomiq - High-Performance Blockchain Platform
+//! Atomiq: High-Performance Blockchain System
 //!
-//! A production-ready blockchain with dual consensus modes:
-//! - DirectCommit: Ultra-fast (5K-10K TPS) for single-validator scenarios
-//! - FullHotStuff: BFT consensus for multi-validator networks
+//! A production-ready blockchain implementation built on HotStuff-rs consensus
+//! with focus on performance, reliability, and maintainability.
 //!
 //! ## Architecture
 //!
 //! The codebase follows clean architecture principles with clear separation:
-//! - **Domain Layer**: Block, Transaction, core business logic
+//! - **Domain Layer**: Block, Transaction, core business logic  
 //! - **Application Layer**: AtomiqApp, state management, transaction pool
 //! - **Infrastructure Layer**: Storage, networking, consensus engines
 //! - **Presentation Layer**: CLI tools, HTTP API
@@ -29,6 +28,24 @@ use std::{
     },
     time::{SystemTime, UNIX_EPOCH},
 };
+
+// Re-export common types and utilities
+pub use common::types::{Block, Transaction};
+pub use errors::{AtomiqError, AtomiqResult};
+
+// Core modules
+pub mod common;
+pub mod errors;
+pub mod storage;
+pub mod network;
+pub mod factory;
+pub mod config;
+pub mod benchmark;
+pub mod transaction_pool;
+pub mod direct_commit;
+
+// API module  
+pub mod api;
 
 // ============================================================================
 // Module Organization (Layered Architecture)

@@ -6,45 +6,10 @@
 use crate::{
     storage::OptimizedStorage,
     errors::AtomiqResult,
+    common::types::{Block, Transaction},
 };
 use hotstuff_rs::block_tree::pluggables::KVGet;
 use std::sync::Arc;
-use serde::{Deserialize, Serialize};
-
-// Local type definitions matching the actual blockchain data structures
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Block {
-    /// Block height/number in the chain (starts at 0 for genesis)
-    pub height: u64,
-    /// SHA256 hash of this block (computed from other fields)
-    pub block_hash: [u8; 32],
-    /// Hash of the previous block (creates immutable chain)
-    pub previous_block_hash: [u8; 32],
-    /// Transactions included in this block
-    pub transactions: Vec<Transaction>,
-    /// Block creation timestamp (Unix milliseconds)
-    pub timestamp: u64,
-    /// Number of transactions (cached for convenience)
-    pub transaction_count: usize,
-    /// Merkle root of all transaction hashes
-    pub transactions_root: [u8; 32],
-    /// State root after applying transactions
-    pub state_root: [u8; 32],
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct Transaction {
-    /// Unique transaction identifier
-    pub id: u64,
-    /// Sender address (32-byte public key hash)
-    pub sender: [u8; 32],
-    /// Transaction payload (arbitrary data)
-    pub data: Vec<u8>,
-    /// Unix timestamp in milliseconds
-    pub timestamp: u64,
-    /// Nonce for replay protection
-    pub nonce: u64,
-}
 
 /// API-specific storage interface
 pub struct ApiStorage {

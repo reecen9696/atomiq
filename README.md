@@ -2,7 +2,18 @@
 
 A production-ready, high-performance blockchain with **dual consensus modes**: full BFT consensus (HotStuff) for multi-validator deployments, and DirectCommit mode for high-throughput single-validator scenarios. Features enterprise-grade cryptographic security, complete blockchain structure with chain linkage, Merkle roots, and comprehensive verification.
 
-**⚡ Performance:** 2.3+ Million TPS verified | **✅ Tests:** 38/38 passing (100%) | **🏗️ Architecture:** Clean code with SOLID principles
+**⚡ Performance:** 2.3+ Million TPS verified | **✅ Tests:** 38/38 passing (100%) | **🏗️ Architecture:** Clean Architecture with DI patterns
+
+## Enterprise Architecture
+
+Atomiq implements **Clean Architecture** principles with:
+
+- **🎯 Dependency Injection**: Configurable service container with trait-based abstractions
+- **📐 SOLID Principles**: Single Responsibility, Open/Closed, Dependency Inversion throughout
+- **🏗️ Layered Design**: Domain → Application → Infrastructure separation
+- **🧪 Testable Code**: Mock implementations and comprehensive test coverage
+- **⚙️ Configuration Management**: Centralized config with environment variable support
+- **🔧 Maintainable**: Future-ready architecture for easy feature additions
 
 ## Test Status & Performance
 
@@ -39,7 +50,9 @@ Atomiq is a **flexible blockchain platform** that provides:
 - **Cryptographic Security**: SHA256 hashing throughout with integrity verification
 - **Persistent Storage**: RocksDB-backed with dual indexing (height + hash) for fast lookups
 - **Comprehensive Tools**: Built-in benchmarking, verification, and inspection utilities
-- **Clean Architecture**: Modular design with clear separation of concerns
+- **Clean Architecture**: Modular design with dependency injection and service abstractions
+- **Enterprise-Grade Error Handling**: Structured error hierarchy with proper context and recovery
+- **Configuration Management**: Environment-aware configuration with validation and centralized management
 
 ## Quick Start
 
@@ -268,29 +281,66 @@ ConsensusMode::DirectCommit {
 
 ## Architecture & Clean Code
 
-### Clean Code Principles Applied
+### Clean Architecture Implementation
 
-**🏗️ Layered Architecture:**
+**🏗️ Service-Oriented Architecture:**
 
-- **Domain Layer:** Core types (Transaction, Block, ValidatorSet)
-- **Application Layer:** Business logic (AtomiqApp, TransactionPool, StateManager)
-- **Infrastructure Layer:** Storage, networking, factory patterns
+- **Common Layer (`src/common/`)**: Shared domain types and interfaces
+  - `types.rs`: Canonical Block/Transaction types with validation
+  - `traits.rs`: Service abstractions (BlockchainStorage, NetworkInterface, ConsensusEngine)
+  - `config.rs`: Centralized configuration management with environment variable support
+- **Services Layer (`src/services.rs`)**: Dependency injection container
+  - ServiceContainer with factory methods
+  - Mock implementations for testing
+  - Override capabilities for development/testing
+- **Application Layer**: Business logic and orchestration
+- **Infrastructure Layer**: Storage, networking, consensus implementations
 
-**📐 SOLID Principles:**
+**📐 SOLID Principles Implemented:**
 
-- ✅ **Single Responsibility:** Each module has one clear purpose
-- ✅ **Open/Closed:** Extensible through traits (BlockchainHandle, ValidationMode)
-- ✅ **Liskov Substitution:** Handles implement common interface
-- ✅ **Interface Segregation:** Small, focused traits
-- ✅ **Dependency Inversion:** Depend on abstractions (traits), not concrete types
+- ✅ **Single Responsibility:** Each service has one clear purpose
+- ✅ **Open/Closed:** Extensible through trait implementations
+- ✅ **Liskov Substitution:** All service implementations are interchangeable
+- ✅ **Interface Segregation:** Focused trait definitions for specific concerns
+- ✅ **Dependency Inversion:** Depend on abstractions (traits), not concrete implementations
 
-**📚 Documentation:**
+**🧪 Dependency Injection:**
 
-- Comprehensive module-level documentation
-- Transaction and Block types fully documented with cryptographic properties
-- Clear explanations of design choices and trade-offs
-- See [REFACTORING_GUIDE.md](REFACTORING_GUIDE.md) for detailed guide
-- See [REFACTORING_SUMMARY.md](REFACTORING_SUMMARY.md) for executive summary
+```rust
+// Configure services
+let mut services = ServiceBuilder::new()
+    .with_storage(Box::new(RocksDBStorage::new(config)?))
+    .with_network(Box::new(ProductionNetwork::new(config)?))
+    .build()?;
+
+// Override for testing
+services.override_storage(Box::new(MockStorage::new()))?;
+```
+
+**⚙️ Configuration Management:**
+
+```rust
+// Environment-aware configuration
+let config = ConfigLoader::new()
+    .load_from_file("config.toml")?
+    .override_with_env()?
+    .validate()?
+    .build()?;
+```
+
+**🔧 Error Handling:**
+
+Comprehensive error hierarchy with context and recovery:
+
+```rust
+pub enum AtomiqError {
+    Config(ConfigError),
+    Storage(StorageError),
+    Network(NetworkError),
+    Consensus(ConsensusError),
+    Transaction(TransactionError),
+}
+```
 
 ## Configuration Modes
 
@@ -557,27 +607,48 @@ See [BLOCKCHAIN_TEST_RESULTS.md](BLOCKCHAIN_TEST_RESULTS.md) for complete test d
 ```
 atomiq/
 ├── src/
-│   ├── lib.rs              # Core types (Block, Transaction, AtomiqApp)
-│   ├── factory.rs          # Blockchain initialization
-│   ├── config.rs           # Configuration (DirectCommit/FullHotStuff)
-│   ├── direct_commit.rs    # DirectCommit consensus engine
-│   ├── state_manager.rs    # State validation & management
-│   ├── transaction_pool.rs # Transaction buffering
-│   ├── storage.rs          # RocksDB wrapper with dual indexing
-│   ├── benchmark.rs        # Benchmarking tools
-│   ├── errors.rs           # Error types
-│   ├── network.rs          # Mock network
-│   ├── main_unified.rs     # FullHotStuff CLI
-│   └── fast_main.rs        # DirectCommit CLI
+│   ├── lib.rs                  # Core module exports and public API
+│   ├── services.rs             # Dependency injection container
+│   ├── api/                    # HTTP API endpoints
+│   │   ├── mod.rs             # API module organization
+│   │   ├── handlers.rs        # Route handlers
+│   │   └── storage.rs         # API storage layer
+│   ├── common/                 # Shared domain types and utilities
+│   │   ├── mod.rs             # Module exports
+│   │   ├── types.rs           # Canonical Block/Transaction types
+│   │   ├── traits.rs          # Service abstractions and interfaces
+│   │   └── config.rs          # Configuration management
+│   ├── blockchain.rs           # Core blockchain implementation
+│   ├── factory.rs              # Blockchain initialization patterns
+│   ├── direct_commit.rs        # DirectCommit consensus engine
+│   ├── state_manager.rs        # State validation & management
+│   ├── transaction_pool.rs     # Transaction buffering
+│   ├── storage.rs              # RocksDB wrapper with dual indexing
+│   ├── benchmark.rs            # Performance benchmarking tools
+│   ├── errors.rs               # Comprehensive error types
+│   ├── network.rs              # Network interface implementations
+│   ├── main_unified.rs         # FullHotStuff CLI
+│   └── fast_main.rs            # DirectCommit CLI
 ├── src/bin/
-│   ├── inspect_blocks.rs   # Block inspection tool
-│   └── verify_chain.rs     # Chain verification tool
+│   ├── inspect_blocks.rs       # Block inspection tool
+│   ├── verify_chain.rs         # Chain verification tool
+│   ├── atomiq-api.rs          # REST API server
+│   └── atomiq-unified.rs      # Unified consensus CLI
 ├── Cargo.toml
 ├── README.md
 ├── BLOCKCHAIN_FEATURES.md      # Feature documentation
 ├── BLOCKCHAIN_TEST_RESULTS.md  # Test results
 └── PERSISTENCE.md              # Persistence guide
 ```
+
+### Key Architectural Improvements
+
+**🎯 Type Canonicalization**: Single source of truth for Block/Transaction types
+**🔄 Service Abstractions**: Trait-based interfaces for all major services
+**⚙️ Configuration Management**: Environment-aware configuration with validation
+**🧪 Testability**: Mock implementations and dependency injection for testing
+**📊 Error Handling**: Structured error hierarchy with context and recovery paths
+**🏗️ Modularity**: Clear separation between domain, application, and infrastructure layers
 
 ### Running Tests
 
@@ -633,48 +704,91 @@ Total: 38/38 tests passing (100%)
 
 ### Adding Custom Transaction Logic
 
-Extend the `AtomiqApp` to add custom transaction types:
+Extend the application using the service container and trait system:
 
 ```rust
-impl App for AtomiqApp {
-    fn execute_transactions(&self, txs: &[Transaction]) -> (Vec<ExecutionResult>, AppStateUpdates) {
-        // Your custom logic:
-        // 1. Validate transaction format
+use atomiq::common::{traits::ConsensusEngine, types::{Block, Transaction}};
+
+// Custom application with dependency injection
+pub struct CustomApp {
+    storage: Box<dyn BlockchainStorage>,
+    network: Box<dyn NetworkInterface>,
+    consensus: Box<dyn ConsensusEngine>,
+    config: AppConfig,
+}
+
+impl CustomApp {
+    pub fn new(services: ServiceContainer, config: AppConfig) -> Result<Self> {
+        Ok(Self {
+            storage: services.storage()?,
+            network: services.network()?,
+            consensus: services.consensus()?,
+            config,
+        })
+    }
+
+    pub async fn process_custom_transaction(&self, tx: &Transaction) -> Result<ExecutionResult> {
+        // 1. Validate transaction format using canonical types
+        tx.validate()?;
+
         // 2. Check business rules (balances, permissions, etc.)
-        // 3. Update state
-        // 4. Return results with state updates
+        self.validate_business_rules(tx).await?;
 
-        let mut results = Vec::new();
-        let mut updates = AppStateUpdates::default();
+        // 3. Update state through storage abstraction
+        let state_update = self.execute_transaction_logic(tx).await?;
+        self.storage.update_state(state_update).await?;
 
-        for tx in txs {
-            match self.process_custom_transaction(tx) {
-                Ok(result) => {
-                    results.push(result);
-                    // Add to state updates
-                }
-                Err(e) => {
-                    results.push(ExecutionResult::Failed(e));
-                }
-            }
-        }
-
-        (results, updates)
+        // 4. Return result with proper error context
+        Ok(ExecutionResult::Success(tx.hash()))
     }
 }
 ```
 
-### Extending Block Structure
+### Extending Block Structure with Clean Architecture
 
-The block structure can be extended while maintaining compatibility:
+Maintain type safety and abstraction:
 
 ```rust
-// Add custom fields (optional)
-pub struct ExtendedBlock {
-    pub base: Block,              // Standard blockchain fields
-    pub proposer: Address,         // Custom: block proposer
-    pub rewards: u64,              // Custom: block reward
-    pub gas_used: u64,             // Custom: total gas
+use atomiq::common::types::{Block, Transaction};
+
+// Custom block builder using canonical types
+pub struct EnhancedBlockBuilder {
+    base: Block,
+    proposer: Address,
+    rewards: u64,
+    gas_used: u64,
+}
+
+impl EnhancedBlockBuilder {
+    pub fn new(transactions: Vec<Transaction>) -> Self {
+        let base = Block::new(
+            height,
+            previous_hash,
+            transactions,
+            state_root,
+        );
+
+        Self {
+            base,
+            proposer: Address::default(),
+            rewards: 0,
+            gas_used: 0,
+        }
+    }
+
+    pub fn with_proposer(mut self, proposer: Address) -> Self {
+        self.proposer = proposer;
+        self
+    }
+
+    pub fn build(self) -> EnhancedBlock {
+        EnhancedBlock {
+            base: self.base,
+            proposer: self.proposer,
+            rewards: self.rewards,
+            gas_used: self.gas_used,
+        }
+    }
 }
 ```
 
@@ -710,36 +824,91 @@ Atomiq provides a complete blockchain foundation with:
 #### Gaming/Casino Platform
 
 ```rust
-impl App for CasinoApp {
-    fn execute_transactions(&self, txs: &[Transaction]) -> ... {
-        for tx in txs {
-            match tx.data.action {
-                "bet" => self.process_bet(tx),
-                "result" => self.process_game_result(tx),
-                "withdraw" => self.process_withdrawal(tx),
-                _ => continue,
-            }
+use atomiq::{common::{traits::*, types::*}, services::ServiceContainer};
+
+pub struct CasinoApp {
+    storage: Box<dyn BlockchainStorage>,
+    network: Box<dyn NetworkInterface>,
+    metrics: Box<dyn MetricsCollector>,
+}
+
+impl CasinoApp {
+    pub fn new(services: ServiceContainer) -> Result<Self> {
+        Ok(Self {
+            storage: services.storage()?,
+            network: services.network()?,
+            metrics: services.metrics()?,
+        })
+    }
+
+    pub async fn process_bet(&self, tx: &Transaction) -> Result<ExecutionResult> {
+        // Parse bet data from canonical transaction type
+        let bet_data = self.parse_bet_data(&tx.data)?;
+
+        // Validate player balance using storage abstraction
+        let balance = self.storage.get_account_balance(&tx.sender).await?;
+        if balance < bet_data.amount {
+            return Err(CasinoError::InsufficientFunds.into());
         }
+
+        // Process game logic with metrics
+        self.metrics.increment_counter("bets_processed", 1)?;
+        let outcome = self.process_game_outcome(&bet_data).await?;
+
+        // Update state through storage interface
+        let state_update = StateUpdate {
+            account: tx.sender.clone(),
+            balance_delta: outcome.payout - bet_data.amount,
+        };
+        self.storage.update_account(state_update).await?;
+
+        Ok(ExecutionResult::Success(outcome))
     }
 }
 ```
 
-**Features:**
+**Enterprise Features:**
 
-- Player balance tracking
-- Provably fair game outcomes
-- Instant transaction finality
-- Verifiable betting history
+- Player balance tracking with audit trails
+- Provably fair game outcomes with cryptographic verification
+- Instant transaction finality through DirectCommit mode
+- Verifiable betting history using canonical block types
+- Comprehensive metrics and monitoring
 
 #### DeFi Platform
 
 ```rust
-impl App for DeFiApp {
-    fn execute_transactions(&self, txs: &[Transaction]) -> ... {
-        // Token transfers
-        // Liquidity pool operations
-        // Lending/borrowing
-        // Staking/rewards
+use atomiq::{common::{traits::*, types::*}, services::*};
+
+pub struct DeFiApp {
+    services: ServiceContainer,
+}
+
+impl DeFiApp {
+    pub async fn execute_swap(&self, tx: &Transaction) -> Result<ExecutionResult> {
+        // Parse swap data using canonical transaction types
+        let swap_data = SwapData::from_transaction(tx)?;
+
+        // Validate through storage abstraction
+        let user_balance = self.services.storage()
+            .get_token_balance(&tx.sender, &swap_data.from_token).await?;
+
+        // Calculate swap using liquidity pool
+        let swap_result = self.calculate_swap(
+            &swap_data.from_token,
+            &swap_data.to_token,
+            swap_data.amount,
+        ).await?;
+
+        // Update balances atomically
+        let state_updates = vec![
+            StateUpdate::token_balance(tx.sender.clone(), swap_data.from_token, -swap_data.amount),
+            StateUpdate::token_balance(tx.sender.clone(), swap_data.to_token, swap_result.output),
+        ];
+
+        self.services.storage().batch_update(state_updates).await?;
+
+        Ok(ExecutionResult::Success(swap_result))
     }
 }
 ```
@@ -747,12 +916,44 @@ impl App for DeFiApp {
 #### Supply Chain Tracking
 
 ```rust
-impl App for SupplyChainApp {
-    fn execute_transactions(&self, txs: &[Transaction]) -> ... {
-        // Product creation
-        // Ownership transfers
-        // Quality certifications
-        // Delivery confirmations
+use atomiq::{common::{traits::*, types::*}, services::*};
+
+pub struct SupplyChainApp {
+    storage: Box<dyn BlockchainStorage>,
+    network: Box<dyn NetworkInterface>,
+}
+
+impl SupplyChainApp {
+    pub async fn track_product_transfer(&self, tx: &Transaction) -> Result<ExecutionResult> {
+        // Parse transfer data from canonical transaction
+        let transfer_data = ProductTransfer::from_transaction(tx)?;
+
+        // Validate ownership using storage interface
+        let current_owner = self.storage
+            .get_product_owner(&transfer_data.product_id).await?;
+
+        if current_owner != tx.sender {
+            return Err(SupplyChainError::NotOwner.into());
+        }
+
+        // Record transfer with timestamp and verification
+        let transfer_record = TransferRecord {
+            product_id: transfer_data.product_id,
+            from: tx.sender.clone(),
+            to: transfer_data.new_owner.clone(),
+            timestamp: tx.timestamp,
+            verification_hash: tx.hash(),
+        };
+
+        // Update ownership and create audit trail
+        self.storage.update_product_owner(
+            transfer_data.product_id,
+            transfer_data.new_owner,
+        ).await?;
+
+        self.storage.add_audit_record(transfer_record).await?;
+
+        Ok(ExecutionResult::Success(transfer_data.product_id))
     }
 }
 ```
@@ -986,25 +1187,60 @@ curl http://localhost:3030/stats
 ### Programmatic API
 
 ```rust
-use atomiq::{Block, Transaction, BlockchainConfig, BlockchainFactory};
-
-// Create blockchain
-let config = BlockchainConfig::high_performance();
-let blockchain = BlockchainFactory::create_direct_commit(config).await?;
-
-// Submit transaction
-let tx = Transaction {
-    id: 1,
-    sender: "user".to_string(),
-    data: "tx_data".to_string(),
-    timestamp: 123456789,
-    nonce: 0,
+use atomiq::{
+    common::{types::*, config::*},
+    services::*,
+    blockchain::*,
 };
-blockchain.submit_transaction(tx)?;
 
-// Get metrics
-let metrics = blockchain.get_metrics();
-println!("Blocks: {}", metrics.blocks_committed);
+// Create blockchain with dependency injection
+async fn setup_blockchain() -> Result<Blockchain> {
+    // Load configuration with environment variables
+    let config = ConfigLoader::new()
+        .load_from_file("atomiq.toml")?
+        .override_with_env()?
+        .validate()?
+        .build()?;
+
+    // Configure services with dependency injection
+    let services = ServiceBuilder::new()
+        .with_config(config.clone())
+        .with_storage(Box::new(RocksDBStorage::new(&config.storage)?))
+        .with_network(Box::new(ProductionNetwork::new(&config.network)?))
+        .with_consensus(Box::new(DirectCommitEngine::new(&config.consensus)?))
+        .with_metrics(Box::new(PrometheusMetrics::new(&config.metrics)?))
+        .build()?;
+
+    // Create blockchain with clean architecture
+    let blockchain = Blockchain::new(services).await?;
+    Ok(blockchain)
+}
+
+// Submit transaction with canonical types
+async fn submit_transaction() -> Result<TransactionId> {
+    let blockchain = setup_blockchain().await?;
+
+    let tx = Transaction::builder()
+        .sender("user123".to_string())
+        .data("transfer_100_tokens".to_string())
+        .timestamp(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64)
+        .build()?;
+
+    let tx_id = blockchain.submit_transaction(tx).await?;
+    Ok(tx_id)
+}
+
+// Query blockchain state through service abstractions
+async fn get_blockchain_metrics() -> Result<BlockchainMetrics> {
+    let blockchain = setup_blockchain().await?;
+    let metrics = blockchain.get_metrics().await?;
+
+    println!("Blocks: {}", metrics.blocks_committed);
+    println!("Transactions: {}", metrics.transactions_processed);
+    println!("TPS: {}", metrics.transactions_per_second);
+
+    Ok(metrics)
+}
 ```
 
 ## License
@@ -1044,6 +1280,6 @@ Contributions welcome! Please:
 
 ---
 
-**Atomiq** - Production-ready blockchain with cryptographic security and **2.3+ Million TPS** verified performance 🚀
+**Atomiq** - Production-ready blockchain with **Clean Architecture**, **Dependency Injection**, and **2.3+ Million TPS** verified performance 🚀
 
-**Status:** ✅ All 38 tests passing | 🎯 Clean code with SOLID principles | 💾 Persistent database in ./DB/ | ⚡ 2.3M+ TPS achieved
+**Status:** ✅ Enterprise Architecture | ✅ 38/38 tests passing | 🎯 SOLID principles | 💾 Persistent database | ⚡ 2.3M+ TPS | 🏗️ DI Container
