@@ -104,6 +104,7 @@ cargo test
 - [IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md) - What was built
 
 **Key Features:**
+
 - ⚡ 10-20ms latency for transaction finalization
 - 🎯 Event-driven (no polling overhead)
 - 🔄 Graceful degradation on timeout
@@ -111,6 +112,7 @@ cargo test
 - 🎮 Perfect for casino games and financial apps
 
 **Quick Start:**
+
 ```bash
 cargo run --example api_with_finalization
 ```

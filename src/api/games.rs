@@ -5,8 +5,9 @@
 //! ensuring verifiable fairness and preventing cherry-picking attacks.
 
 use crate::{
-    blockchain_game_processor::{BlockchainGameProcessor, GameBetData, BlockchainGameResult},
-    common::types::{Transaction, TransactionType},
+    blockchain_game_processor::{BlockchainGameProcessor, GameBetData},
+    common::types::Transaction,
+    api::storage::ApiStorage,
     fairness::{FairnessError, FairnessWaiter},
     games::{
         types::{CoinFlipPlayRequest, GameResponse, Token, VerifyVRFRequest, VerifyVRFResponse, GameType},
@@ -19,7 +20,6 @@ use axum::{
     http::StatusCode,
     response::Json,
 };
-use sha2::{Sha256, Digest};
 use std::sync::Arc;
 
 /// Shared state for game API
@@ -32,7 +32,7 @@ pub struct GameApiState {
     pub game_processor: Arc<BlockchainGameProcessor>,
     
     /// Transaction submission channel (to blockchain)
-    pub tx_sender: tokio::sync::mpsc::UnboundedSender<Transaction>,
+    pub tx_sender: tokio::sync::mpsc::Sender<Transaction>,
     
     /// Finalization waiter for awaiting block commits (optional - without this, games return pending status)
     pub finalization_waiter: Option<Arc<FinalizationWaiter>>,
@@ -87,11 +87,21 @@ pub async fn play_coinflip(
     
     // Submit transaction to blockchain AFTER waiter is registered
     tracing::debug!("Submitting transaction {} to blockchain", tx_id);
-    state.tx_sender.send(transaction.clone())
-        .map_err(|e| {
-            tracing::error!("Failed to submit transaction {}: {}", tx_id, e);
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to submit transaction: {}", e))
-        })?;
+    match state.tx_sender.try_send(transaction.clone()) {
+        Ok(()) => {}
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Transaction queue is full; retry shortly".to_string(),
+            ));
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Transaction submission channel is closed".to_string(),
+            ));
+        }
+    }
     tracing::debug!("Transaction {} submitted successfully", tx_id);
     
     // Now wait for the finalization result
@@ -380,6 +390,63 @@ pub async fn verify_game_by_id(
         .get_game_result(tx_id)
         .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Game {} not found", game_id)))?;
 
+    // Strict inclusion cross-check: the stored game result must match canonical DB inclusion.
+    // This prevents verifying a result that isn't actually anchored to the finalized chain.
+    let api_storage = ApiStorage::new(state.storage.clone());
+    let inclusion = match api_storage.find_transaction(tx_id) {
+        Ok(Some((included_height, _idx, included_tx))) => {
+            if included_tx.id != tx_id {
+                return Ok(Json(VerifyVRFResponse {
+                    is_valid: false,
+                    error: Some("Transaction index mismatch (wrong tx at indexed location)".to_string()),
+                    computed_result: None,
+                    explanation: Some("The tx index points to a different transaction; inclusion proof is invalid.".to_string()),
+                }));
+            }
+
+            let Some(block) = api_storage
+                .get_block_by_height(included_height)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Storage error: {}", e)))?
+            else {
+                return Ok(Json(VerifyVRFResponse {
+                    is_valid: false,
+                    error: Some("Indexed block not found".to_string()),
+                    computed_result: None,
+                    explanation: Some("The tx index references a missing block; inclusion proof is invalid.".to_string()),
+                }));
+            };
+
+            Some((included_height, block.block_hash))
+        }
+        Ok(None) => None,
+        Err(e) => {
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Storage error: {}", e)));
+        }
+    };
+
+    let Some((included_height, included_hash)) = inclusion else {
+        return Ok(Json(VerifyVRFResponse {
+            is_valid: false,
+            error: Some("Transaction not found in canonical chain".to_string()),
+            computed_result: None,
+            explanation: Some("No finalized transaction inclusion record exists for this tx_id.".to_string()),
+        }));
+    };
+
+    if included_height != result.block_height || included_hash != result.block_hash {
+        return Ok(Json(VerifyVRFResponse {
+            is_valid: false,
+            error: Some("Stored result inclusion does not match canonical chain".to_string()),
+            computed_result: Some(serde_json::json!({
+                "stored_block_height": result.block_height,
+                "stored_block_hash": hex::encode(result.block_hash),
+                "canonical_block_height": included_height,
+                "canonical_block_hash": hex::encode(included_hash),
+            })),
+            explanation: Some("The persisted game result is not anchored to the canonical inclusion record.".to_string()),
+        }));
+    }
+
     match state.game_processor.verify_game_result(&result) {
         Ok(true) => Ok(Json(VerifyVRFResponse {
             is_valid: true,
@@ -393,7 +460,7 @@ pub async fn verify_game_by_id(
                 "vrf_input_message": result.vrf_input_message,
             })),
             explanation: Some(format!(
-                "Game result verified for block height {} (VRF + game logic OK).",
+                "Game result verified for block height {} (inclusion + VRF + game logic OK).",
                 result.block_height
             )),
         })),
@@ -421,6 +488,121 @@ pub async fn list_supported_tokens() -> Json<Vec<Token>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn build_blockchain_storage_with_tx(
+        storage: &OptimizedStorage,
+        height: u64,
+        tx: crate::Transaction,
+    ) -> crate::Block {
+        let block = crate::Block::new(height, [0u8; 32], vec![tx], [0u8; 32]);
+        let key = format!("block:height:{}", height);
+        let bytes = bincode::serialize(&block).unwrap();
+        storage.put(key.as_bytes(), &bytes).unwrap();
+        block
+    }
+
+    #[tokio::test]
+    async fn test_verify_game_inclusion_mismatch_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(OptimizedStorage::new(dir.path()).unwrap());
+
+        // Canonical block at height 10 with tx_id=1
+        let canonical_tx = crate::Transaction {
+            id: 1,
+            sender: [0u8; 32],
+            data: vec![1, 2, 3],
+            nonce: 1,
+            timestamp: 1234567890000,
+        };
+        let canonical_block = build_blockchain_storage_with_tx(storage.as_ref(), 10, canonical_tx);
+
+        // Store tx index (initially correct)
+        storage.put(b"latest_height", &11u64.to_le_bytes()).unwrap();
+        storage
+            .put(format!("tx_idx:{}", 1).as_bytes(), b"10:0")
+            .unwrap();
+
+        // Create a different block at height 11 with a different tx at index 0
+        let wrong_tx = crate::Transaction {
+            id: 999,
+            sender: [9u8; 32],
+            data: vec![9, 9, 9],
+            nonce: 1,
+            timestamp: 1234567890001,
+        };
+        let _wrong_block = build_blockchain_storage_with_tx(storage.as_ref(), 11, wrong_tx);
+
+        // Corrupt tx index to point to the wrong location
+        storage
+            .put(format!("tx_idx:{}", 1).as_bytes(), b"11:0")
+            .unwrap();
+
+        // Persist a game result that claims inclusion in the canonical block (height 10)
+        let processor = Arc::new(BlockchainGameProcessor::new_with_persistent_key(storage.clone()).unwrap());
+
+        let bet_data = GameBetData {
+            game_type: GameType::CoinFlip,
+            bet_amount: 1000,
+            token: Token::sol(),
+            player_choice: crate::games::types::CoinChoice::Heads,
+            player_address: "test_player".to_string(),
+        };
+        let common_tx = Transaction::new_game_bet_with_timestamp(
+            1,
+            [0u8; 32],
+            serde_json::to_vec(&bet_data).unwrap(),
+            1,
+            1234567890000,
+        );
+        processor
+            .process_game_transaction(&common_tx, canonical_block.block_hash, canonical_block.height)
+            .unwrap();
+
+        let (tx_sender, _rx) = tokio::sync::mpsc::channel::<Transaction>(1);
+        let state = GameApiState {
+            storage: storage.clone(),
+            game_processor: processor,
+            tx_sender,
+            finalization_waiter: None,
+            fairness_waiter: None,
+        };
+
+        let response = verify_game_by_id(Path("tx-1".to_string()), State(state))
+            .await
+            .unwrap();
+        assert!(!response.0.is_valid);
+    }
+
+    #[tokio::test]
+    async fn test_play_coinflip_queue_full_returns_503() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(OptimizedStorage::new(dir.path()).unwrap());
+        let processor = Arc::new(BlockchainGameProcessor::new_with_persistent_key(storage.clone()).unwrap());
+
+        let (tx_sender, _rx) = tokio::sync::mpsc::channel::<Transaction>(1);
+        // Fill the queue
+        let dummy_tx = Transaction::new_game_bet(42, [0u8; 32], vec![0u8; 1], 1);
+        tx_sender.try_send(dummy_tx).unwrap();
+
+        let state = GameApiState {
+            storage,
+            game_processor: processor,
+            tx_sender,
+            finalization_waiter: None,
+            fairness_waiter: None,
+        };
+
+        let request = CoinFlipPlayRequest {
+            player_id: "test_player".to_string(),
+            bet_amount: 1.0,
+            choice: crate::games::types::CoinChoice::Heads,
+            token: Token::sol(),
+            wallet_signature: None,
+        };
+
+        let err = play_coinflip(State(state), Json(request)).await.err().unwrap();
+        assert_eq!(err.0, StatusCode::SERVICE_UNAVAILABLE);
+    }
 
     #[tokio::test]
     async fn test_list_supported_tokens() {

@@ -45,6 +45,9 @@ pub struct ApiConfig {
     
     // Game settings
     pub enable_games: bool,
+
+    // Backpressure settings
+    pub tx_queue_capacity: usize,
 }
 
 impl Default for ApiConfig {
@@ -68,6 +71,9 @@ impl Default for ApiConfig {
             
             // Game defaults
             enable_games: true, // Enable casino games by default
+
+            // Backpressure defaults
+            tx_queue_capacity: 50_000,
         }
     }
 }
@@ -117,6 +123,7 @@ impl ApiServer {
 
         info!("🚀 Starting High-Performance Atomiq API Server");
         info!("   Max concurrent requests: {}", self.config.max_concurrent_requests);
+        info!("   Tx ingest queue capacity: {}", self.config.tx_queue_capacity);
 
         if self.config.tls_enabled {
             warn!("⚠️  HTTPS/TLS support is planned but not yet implemented");
@@ -169,7 +176,7 @@ impl ApiServer {
             let sender = if let Some(blockchain_sender) = &self.blockchain_tx_sender {
                 info!("🔗 Connected to blockchain for transaction submission");
                 let sender_clone = blockchain_sender.clone();
-                let (tx, mut rx) = mpsc::unbounded_channel::<Transaction>();
+                let (tx, mut rx) = mpsc::channel::<Transaction>(self.config.tx_queue_capacity);
                 
                 // Forward transactions to blockchain
                 tokio::spawn(async move {
@@ -183,7 +190,7 @@ impl ApiServer {
                 tx
             } else {
                 info!("⚠️  No blockchain connection - transactions will not be processed");
-                let (sender, mut receiver) = mpsc::unbounded_channel::<Transaction>();
+                let (sender, mut receiver) = mpsc::channel::<Transaction>(self.config.tx_queue_capacity);
                 
                 // Dummy handler that discards transactions
                 tokio::spawn(async move {

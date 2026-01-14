@@ -7,7 +7,7 @@ Game endpoints now wait for blockchain finalization before returning results. Th
 ## Key Files
 
 - `src/finalization.rs` - Core finalization event system
-- `src/direct_commit.rs` - Emits BlockCommittedEvent after storage commit  
+- `src/direct_commit.rs` - Emits BlockCommittedEvent after storage commit
 - `src/api/games.rs` - Game handlers wait for finalization
 - `examples/api_with_finalization.rs` - Working example
 
@@ -22,6 +22,7 @@ Client Request → Submit Transaction → Wait for Block Commit → Return Resul
 ## API Changes
 
 ### GameApiState (Before)
+
 ```rust
 pub struct GameApiState {
     pub storage: RawStorage,
@@ -31,6 +32,7 @@ pub struct GameApiState {
 ```
 
 ### GameApiState (After)
+
 ```rust
 pub struct GameApiState {
     pub storage: RawStorage,
@@ -43,6 +45,7 @@ pub struct GameApiState {
 ## Response Types
 
 ### With Finalization (Fast)
+
 ```json
 {
   "status": "complete",
@@ -50,9 +53,11 @@ pub struct GameApiState {
   "result": { "outcome": "win", "payout": 200 }
 }
 ```
-*Returned in ~10-20ms*
+
+_Returned in ~10-20ms_
 
 ### Without Finalization or Timeout
+
 ```json
 {
   "status": "pending",
@@ -60,11 +65,13 @@ pub struct GameApiState {
   "tx_id": 12345
 }
 ```
-*Client polls `/api/game/:id`*
+
+_Client polls `/api/game/:id`_
 
 ## Code Example
 
 ### Setup (Once at Startup)
+
 ```rust
 use atomiq::{
     api::server::{ApiServer, ApiConfig},
@@ -96,6 +103,7 @@ let server = ApiServer::with_finalization(
 ```
 
 ### Usage in Handler
+
 ```rust
 pub async fn play_game(
     State(state): State<GameApiState>,
@@ -103,7 +111,7 @@ pub async fn play_game(
 ) -> Result<Json<GameResponse>, (StatusCode, String)> {
     // Submit transaction
     let tx_id = submit_transaction(&state, request).await?;
-    
+
     // Wait for finalization (optional - graceful degradation)
     if let Some(waiter) = &state.finalization_waiter {
         match waiter.wait_for_transaction(tx_id, Duration::from_secs(2)).await {
@@ -117,7 +125,7 @@ pub async fn play_game(
             }
         }
     }
-    
+
     // Return pending status
     Ok(Json(GameResponse::Pending { game_id, tx_id }))
 }
@@ -126,11 +134,13 @@ pub async fn play_game(
 ## Testing
 
 ### Run Example
+
 ```bash
 cargo run --example api_with_finalization
 ```
 
 ### Test Request
+
 ```bash
 curl -X POST http://127.0.0.1:3000/api/coinflip/play \
   -H "Content-Type: application/json" \
@@ -138,21 +148,21 @@ curl -X POST http://127.0.0.1:3000/api/coinflip/play \
 ```
 
 ### Expected Response
+
 ```json
 {
   "status": "complete",
-    "game_id": "tx-1736890000000",
+  "game_id": "tx-1736890000000",
   "result": {
-        "vrf": {
-            "public_key": "<32-byte hex>",
-            "vrf_proof": "<64-byte hex schnorrkel signature>",
-            "vrf_output": "<32-byte hex sha256(signature)>",
-            "input_message": "<exact UTF-8 message that was signed>"
-        },
-        "block_height": 1234,
-        "block_hash": "<32-byte hex>",
-        "finalization_confirmed": true,
-        
+    "vrf": {
+      "public_key": "<32-byte hex>",
+      "vrf_proof": "<64-byte hex schnorrkel signature>",
+      "vrf_output": "<32-byte hex sha256(signature)>",
+      "input_message": "<exact UTF-8 message that was signed>"
+    },
+    "block_height": 1234,
+    "block_hash": "<32-byte hex>",
+    "finalization_confirmed": true
   }
 }
 ```
@@ -160,12 +170,14 @@ curl -X POST http://127.0.0.1:3000/api/coinflip/play \
 ## Configuration
 
 ### Timeout (Per Endpoint)
+
 ```rust
 // In handler:
 Duration::from_secs(2)  // Default for games
 ```
 
 ### Block Time (Blockchain Config)
+
 ```rust
 // In DirectCommit config:
 block_time_ms: 10  // 10ms blocks
@@ -173,26 +185,29 @@ block_time_ms: 10  // 10ms blocks
 
 ## Performance
 
-| Metric | Value |
-|--------|-------|
-| Latency (typical) | 10-20ms |
-| Latency (timeout) | 2000ms |
-| Throughput | 5000+ req/s |
-| Memory/waiter | ~128 bytes |
-| CPU overhead | <1% |
+| Metric            | Value       |
+| ----------------- | ----------- |
+| Latency (typical) | 10-20ms     |
+| Latency (timeout) | 2000ms      |
+| Throughput        | 5000+ req/s |
+| Memory/waiter     | ~128 bytes  |
+| CPU overhead      | <1%         |
 
 ## Troubleshooting
 
 ### "Timeout waiting for finalization"
+
 → Check block production is running
 → Check transaction was actually submitted
 → Increase timeout duration
 
 ### "finalization_waiter is None"
+
 → Use `ApiServer::with_finalization()` instead of `new()`
 → Pass `FinalizationWaiter` at server creation
 
 ### Response always "pending"
+
 → Verify DirectCommit engine is emitting events
 → Check `event_publisher()` is connected
 → Verify timeout is sufficient (>50ms)
@@ -200,6 +215,7 @@ block_time_ms: 10  // 10ms blocks
 ## Monitoring
 
 Key metrics to track:
+
 - `finalization_wait_duration_ms` - Distribution of wait times
 - `finalization_timeout_rate` - Percentage of timeouts
 - `pending_waiters` - Current waiters (should be low)

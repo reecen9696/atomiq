@@ -63,6 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_concurrent_requests: 5000,
         preload_recent_blocks: 100,
         enable_games: true, // Enable casino games
+        tx_queue_capacity: 50_000,
     };
 
     // Create API server with finalization support

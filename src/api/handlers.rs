@@ -35,7 +35,7 @@ pub struct AppState {
     
     // Game-related components for casino functionality
     pub game_processor: Option<Arc<BlockchainGameProcessor>>,
-    pub tx_sender: Option<mpsc::UnboundedSender<crate::common::types::Transaction>>,
+    pub tx_sender: Option<mpsc::Sender<crate::common::types::Transaction>>,
     pub finalization_waiter: Option<Arc<FinalizationWaiter>>,
     pub fairness_waiter: Option<Arc<FairnessWaiter>>,
 }

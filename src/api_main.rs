@@ -104,6 +104,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_concurrent_requests: 5000,
         preload_recent_blocks: 1000,
         enable_games: args.enable_games,
+        tx_queue_capacity: 50_000,
     };
 
     // Create and run server
