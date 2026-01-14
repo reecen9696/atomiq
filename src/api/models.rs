@@ -92,3 +92,25 @@ pub struct TransactionData {
     pub timestamp: u64,
     pub nonce: u64,
 }
+
+/// Performance metrics response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricsResponse {
+    pub performance: PerformanceInfo,
+    pub cache: CacheInfo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PerformanceInfo {
+    pub total_requests: u64,
+    pub avg_response_time_us: u64,
+    pub current_concurrent: usize,
+    pub max_concurrent: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheInfo {
+    pub hit_ratio: f64,
+    pub cached_blocks: usize,
+    pub cached_transactions: usize,
+}

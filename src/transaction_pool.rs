@@ -72,7 +72,27 @@ impl TransactionPool {
 
     /// Submit transaction to pool with validation and backpressure handling
     pub fn submit_transaction(&self, mut transaction: Transaction) -> AtomiqResult<u64> {
-        // Validate transaction size
+        // Validate transaction size (early return pattern)
+        self.validate_transaction_size(&transaction)?;
+
+        // Check pool capacity with logging
+        let current_pool_size = self.pool_size();
+        self.check_pool_capacity(current_pool_size)?;
+        self.log_capacity_warnings(current_pool_size);
+
+        // Assign ID and timestamp
+        let tx_id = self.assign_transaction_id();
+        transaction.id = tx_id;
+        transaction.timestamp = Self::get_current_timestamp_ms()?;
+
+        // Insert transaction using policy
+        self.insert_transaction(transaction)?;
+
+        Ok(tx_id)
+    }
+
+    /// Validate transaction data size against configuration limits
+    fn validate_transaction_size(&self, transaction: &Transaction) -> AtomiqResult<()> {
         if transaction.data.len() > self.config.max_transaction_data_size {
             log::warn!(
                 "Transaction rejected: data too large ({} bytes > {} max)",
@@ -84,103 +104,160 @@ impl TransactionPool {
                 max_size: self.config.max_transaction_data_size,
             }.into());
         }
+        Ok(())
+    }
 
-        let current_pool_size = self.pool_size();
-        
-        // Check pool capacity with enhanced logging
-        if current_pool_size >= self.config.max_pool_size {
+    /// Check if pool has capacity for new transaction
+    fn check_pool_capacity(&self, current_size: usize) -> AtomiqResult<()> {
+        if current_size >= self.config.max_pool_size {
             log::warn!(
-                "Transaction pool full: rejecting transaction (current: {}, max: {}). Consider increasing pool size or reducing transaction rate.",
-                current_pool_size,
+                "Transaction pool full: rejecting transaction (current: {}, max: {})",
+                current_size,
                 self.config.max_pool_size
             );
             return Err(TransactionError::PoolFull.into());
         }
+        Ok(())
+    }
+
+    /// Log warnings when pool is approaching capacity
+    fn log_capacity_warnings(&self, current_size: usize) {
+        const HIGH_CAPACITY_THRESHOLD: f64 = 0.9;
+        let capacity_ratio = current_size as f64 / self.config.max_pool_size as f64;
         
-        // Log when pool is getting close to capacity (90% threshold)
-        let capacity_ratio = current_pool_size as f64 / self.config.max_pool_size as f64;
-        if capacity_ratio > 0.9 {
+        if capacity_ratio > HIGH_CAPACITY_THRESHOLD {
             log::warn!(
-                "Transaction pool nearing capacity: {}/{} ({:.1}% full). System experiencing backpressure.",
-                current_pool_size,
+                "Transaction pool nearing capacity: {}/{} ({:.1}% full)",
+                current_size,
                 self.config.max_pool_size,
                 capacity_ratio * 100.0
             );
         }
+    }
 
-        // Assign ID and timestamp
-        let tx_id = self.transaction_counter.fetch_add(1, Ordering::SeqCst) + 1;
-        transaction.id = tx_id;
-        transaction.timestamp = SystemTime::now()
+    /// Assign unique transaction ID using atomic counter
+    fn assign_transaction_id(&self) -> u64 {
+        self.transaction_counter.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Get current system timestamp in milliseconds
+    fn get_current_timestamp_ms() -> AtomiqResult<u64> {
+        let duration = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+            .map_err(|e| TransactionError::ExecutionFailed(
+                format!("Failed to get system time: {}", e)
+            ))?;
+        Ok(duration.as_millis() as u64)
+    }
 
-        // Insert based on ordering policy
-        let mut pool = self.pool.write().unwrap();
+    /// Insert transaction into pool based on ordering policy
+    fn insert_transaction(&self, transaction: Transaction) -> AtomiqResult<()> {
+        let mut pool = self.pool.write()
+            .map_err(|e| TransactionError::ExecutionFailed(
+                format!("Failed to acquire pool lock: {}", e)
+            ))?;
         
-        match self.config.ordering_policy {
-            OrderingPolicy::Fifo => {
-                pool.push_back(transaction.clone());
-            }
-            OrderingPolicy::NonceOrdered => {
-                // For simplicity, still use FIFO but could implement nonce-based ordering
-                pool.push_back(transaction.clone());
-            }
-            OrderingPolicy::FeeBased => {
-                // Future enhancement for fee-based ordering
-                pool.push_back(transaction.clone());
-            }
-        }
-
-        Ok(tx_id)
+        // All policies currently use FIFO insertion
+        // NonceOrdered and FeeBased are placeholders for future enhancement
+        pool.push_back(transaction);
+        Ok(())
     }
 
     /// Get current transaction pool size
+    ///
+    /// Returns 0 if unable to acquire read lock
     pub fn pool_size(&self) -> usize {
-        self.pool.read().unwrap().len()
+        self.pool.read()
+            .map(|pool| pool.len())
+            .unwrap_or_else(|e| {
+                log::error!("Failed to read pool size: {}", e);
+                0
+            })
     }
 
     /// Drain transactions from pool for block creation
+    ///
+    /// Returns empty vector if unable to acquire write lock
     pub fn drain_transactions(&self, max_count: usize) -> Vec<Transaction> {
-        let mut pool = self.pool.write().unwrap();
-        let count = std::cmp::min(max_count, pool.len());
-        pool.drain(0..count).collect()
+        match self.pool.write() {
+            Ok(mut pool) => {
+                let count = std::cmp::min(max_count, pool.len());
+                pool.drain(0..count).collect()
+            }
+            Err(e) => {
+                log::error!("Failed to drain transactions: {}", e);
+                Vec::new()
+            }
+        }
     }
 
     /// Peek at pending transactions without removing them
+    ///
+    /// Returns empty vector if unable to acquire read lock
     pub fn peek_transactions(&self, max_count: usize) -> Vec<Transaction> {
-        let pool = self.pool.read().unwrap();
-        let count = std::cmp::min(max_count, pool.len());
-        pool.iter().take(count).cloned().collect()
+        match self.pool.read() {
+            Ok(pool) => {
+                let count = std::cmp::min(max_count, pool.len());
+                pool.iter().take(count).cloned().collect()
+            }
+            Err(e) => {
+                log::error!("Failed to peek transactions: {}", e);
+                Vec::new()
+            }
+        }
     }
 
     /// Remove specific transactions from pool (for failed validations)
+    ///
+    /// Returns number of transactions removed, or 0 if unable to acquire lock
     pub fn remove_transactions(&self, transaction_ids: &[u64]) -> usize {
-        let mut pool = self.pool.write().unwrap();
-        let original_size = pool.len();
-        
-        pool.retain(|tx| !transaction_ids.contains(&tx.id));
-        
-        original_size - pool.len()
+        match self.pool.write() {
+            Ok(mut pool) => {
+                let original_size = pool.len();
+                pool.retain(|tx| !transaction_ids.contains(&tx.id));
+                original_size - pool.len()
+            }
+            Err(e) => {
+                log::error!("Failed to remove transactions: {}", e);
+                0
+            }
+        }
     }
 
     /// Clear all transactions from the pool
+    ///
+    /// Logs error if unable to acquire write lock
     pub fn clear(&self) {
-        let mut pool = self.pool.write().unwrap();
-        pool.clear();
+        match self.pool.write() {
+            Ok(mut pool) => pool.clear(),
+            Err(e) => log::error!("Failed to clear transaction pool: {}", e),
+        }
     }
 
     /// Get statistics about the transaction pool
+    ///
+    /// Returns zero stats if unable to acquire read lock
     pub fn get_stats(&self) -> TransactionPoolStats {
-        let pool = self.pool.read().unwrap();
-        let total_data_size: usize = pool.iter().map(|tx| tx.data.len()).sum();
-        
-        TransactionPoolStats {
-            total_transactions: pool.len() as u64,
-            total_data_size_bytes: total_data_size as u64,
-            capacity_utilization: (pool.len() as f64 / self.config.max_pool_size as f64) * 100.0,
-            transactions_processed: self.transaction_counter.load(Ordering::SeqCst),
+        match self.pool.read() {
+            Ok(pool) => {
+                let total_data_size: usize = pool.iter().map(|tx| tx.data.len()).sum();
+                
+                TransactionPoolStats {
+                    total_transactions: pool.len() as u64,
+                    total_data_size_bytes: total_data_size as u64,
+                    capacity_utilization: (pool.len() as f64 / self.config.max_pool_size as f64) * 100.0,
+                    transactions_processed: self.transaction_counter.load(Ordering::SeqCst),
+                }
+            }
+            Err(e) => {
+                log::error!("Failed to get pool stats: {}", e);
+                TransactionPoolStats {
+                    total_transactions: 0,
+                    total_data_size_bytes: 0,
+                    capacity_utilization: 0.0,
+                    transactions_processed: self.transaction_counter.load(Ordering::SeqCst),
+                }
+            }
         }
     }
 

@@ -151,6 +151,9 @@ pub struct StorageConfig {
     pub compression_type: CompressionType,
     /// Whether to clear database on startup (testing only!)
     pub clear_on_start: bool,
+    /// Maximum blocks to retain (None = keep all blocks, Some(n) = prune to last n blocks)
+    /// For resource-constrained deployments (e.g., droplets with limited storage)
+    pub max_blocks_retained: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -170,6 +173,7 @@ impl Default for StorageConfig {
             target_file_size_mb: 128,
             compression_type: CompressionType::Lz4,
             clear_on_start: false,  // Production default: preserve data
+            max_blocks_retained: None,  // Keep all blocks by default
         }
     }
 }
@@ -239,6 +243,7 @@ impl AtomiqConfig {
                 max_write_buffer_number: 8,
                 target_file_size_mb: 256,
                 clear_on_start: true,  // Testing mode: clear DB
+                max_blocks_retained: None,  // Keep all blocks in testing
                 ..Default::default()
             },
             ..Default::default()
@@ -273,6 +278,7 @@ impl AtomiqConfig {
             },
             storage: StorageConfig {
                 clear_on_start: true,  // Testing mode: clear DB
+                max_blocks_retained: None,
                 ..Default::default()
             },
             ..Default::default()
@@ -305,6 +311,7 @@ impl AtomiqConfig {
                 target_file_size_mb: 256,
                 compression_type: CompressionType::Lz4,
                 clear_on_start: false,  // Production: preserve blockchain data
+                max_blocks_retained: None,  // Keep all blocks in production
             },
             monitoring: MonitoringConfig {
                 enable_logging: true,

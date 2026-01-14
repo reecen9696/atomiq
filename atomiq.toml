@@ -1,0 +1,62 @@
+# Atomiq Blockchain Configuration
+# High-performance settings optimized for 50,000+ concurrent requests
+
+[blockchain]
+# Consensus mode: "DirectCommit" for high performance, "HotStuff" for BFT
+consensus_mode = "DirectCommit"
+# Block interval in milliseconds (5ms for maximum throughput)
+block_interval_ms = 5
+# Maximum transactions per block
+max_transactions_per_block = 50000
+# Database path
+database_path = "./DB/blockchain_data"
+
+[api]
+# Server configuration
+host = "0.0.0.0"
+port = 8080
+# Maximum concurrent requests
+max_concurrent_requests = 50000
+# Request timeout in seconds
+request_timeout_secs = 30
+# Enable performance metrics endpoint
+enable_metrics = true
+# Number of recent blocks to preload into cache
+preload_recent_blocks = 1000
+
+[network]
+# Node identifier
+node_id = "atomiq-node-1"
+# Network name
+network = "atomiq-mainnet"
+# Allowed CORS origins (* for all, comma-separated for specific)
+cors_origins = ["*"]
+
+[performance]
+# Cache settings
+cache_block_count = 10000
+cache_transaction_count = 50000
+# Lock-free storage enabled
+lock_free_storage = true
+# Request prioritization enabled
+request_prioritization = true
+# Aggressive caching for hot paths
+aggressive_caching = true
+
+[monitoring]
+# Logging level
+log_level = "info"
+# Enable structured logging
+structured_logging = true
+# Enable OpenTelemetry tracing
+enable_tracing = false
+# Prometheus metrics port
+metrics_port = 9090
+
+[deployment]
+# Docker image tag
+image_tag = "latest"
+# Health check interval
+health_check_interval = 30
+# Graceful shutdown timeout
+shutdown_timeout = 30

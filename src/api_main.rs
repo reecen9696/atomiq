@@ -96,6 +96,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tls_enabled: args.tls,
         cert_path: args.cert_path,
         key_path: args.key_path,
+        enable_metrics: true,
+        max_concurrent_requests: 5000,
+        preload_recent_blocks: 1000,
     };
 
     // Create and run server

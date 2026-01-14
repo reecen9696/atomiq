@@ -67,18 +67,20 @@ impl ApiStorage {
     }
 
     /// Get a block by hash (finalized only)
+    /// OPTIMIZED: Uses lightweight hash_idx -> height mapping
     pub fn get_block_by_hash(&self, hash: &[u8; 32]) -> AtomiqResult<Option<Block>> {
-        let key = format!("block:hash:{}", hex::encode(hash));
-        if let Some(bytes) = self.storage.get(key.as_bytes()) {
-            let block: Block = bincode::deserialize(&bytes).map_err(|e| {
+        // Use lightweight hash index to find height
+        let hash_idx_key = format!("hash_idx:{}", hex::encode(hash));
+        if let Some(height_bytes) = self.storage.get(hash_idx_key.as_bytes()) {
+            let height = u64::from_le_bytes(height_bytes.try_into().map_err(|_| {
                 crate::errors::AtomiqError::Storage(
-                    crate::errors::StorageError::CorruptedData(format!("Failed to deserialize block: {}", e))
+                    crate::errors::StorageError::CorruptedData("Invalid height bytes in hash index".to_string())
                 )
-            })?;
-            Ok(Some(block))
-        } else {
-            Ok(None)
+            })?);
+            // Now get block by height
+            return self.get_block_by_height(height);
         }
+        Ok(None)
     }
 
     /// Get a range of blocks (finalized only)
@@ -99,11 +101,12 @@ impl ApiStorage {
     }
 
     /// Find transaction by ID using index for O(1) lookup
+    /// OPTIMIZED: Uses tx_idx -> (height:index) -> extract from block pattern
     /// Returns (block_height, tx_index, transaction)
     pub fn find_transaction(&self, tx_id: u64) -> AtomiqResult<Option<(u64, usize, Transaction)>> {
-        // First try to use the transaction index (Fix D)
-        let tx_index_key = format!("tx_index:{}", tx_id);
-        if let Some(location_bytes) = self.storage.get(tx_index_key.as_bytes()) {
+        // Use the optimized transaction index (tx_idx:ID -> height:index)
+        let tx_idx_key = format!("tx_idx:{}", tx_id);
+        if let Some(location_bytes) = self.storage.get(tx_idx_key.as_bytes()) {
             let location_str = String::from_utf8(location_bytes).map_err(|_| {
                 crate::errors::AtomiqError::Storage(
                     crate::errors::StorageError::CorruptedData("Invalid transaction index format".to_string())
@@ -123,15 +126,12 @@ impl ApiStorage {
                     )
                 })?;
                 
-                // Get transaction data directly by ID
-                let tx_data_key = format!("tx_data:{}", tx_id);
-                if let Some(tx_bytes) = self.storage.get(tx_data_key.as_bytes()) {
-                    let transaction: Transaction = bincode::deserialize(&tx_bytes).map_err(|e| {
-                        crate::errors::AtomiqError::Storage(
-                            crate::errors::StorageError::CorruptedData(format!("Failed to deserialize transaction: {}", e))
-                        )
-                    })?;
-                    return Ok(Some((height, tx_index, transaction)));
+                // Get transaction from block (no separate tx_data storage)
+                if let Some(block) = self.get_block_by_height(height)? {
+                    if tx_index < block.transactions.len() {
+                        let transaction = block.transactions[tx_index].clone();
+                        return Ok(Some((height, tx_index, transaction)));
+                    }
                 }
             }
         }
@@ -147,6 +147,37 @@ impl ApiStorage {
                         return Ok(Some((height, idx, tx.clone())));
                     }
                 }
+            }
+        }
+        
+        Ok(None)
+    }
+
+    /// Find transaction location by string ID (for new API)
+    /// OPTIMIZED: Uses tx_idx:ID -> height:index mapping
+    pub fn find_transaction_location(&self, tx_id: &str) -> AtomiqResult<Option<(u64, u32)>> {
+        let tx_idx_key = format!("tx_idx:{}", tx_id);
+        if let Some(location_bytes) = self.storage.get(tx_idx_key.as_bytes()) {
+            let location_str = String::from_utf8(location_bytes).map_err(|_| {
+                crate::errors::AtomiqError::Storage(
+                    crate::errors::StorageError::CorruptedData("Invalid transaction index format".to_string())
+                )
+            })?;
+            
+            let parts: Vec<&str> = location_str.split(':').collect();
+            if parts.len() == 2 {
+                let height: u64 = parts[0].parse().map_err(|_| {
+                    crate::errors::AtomiqError::Storage(
+                        crate::errors::StorageError::CorruptedData("Invalid height in transaction index".to_string())
+                    )
+                })?;
+                let tx_index: u32 = parts[1].parse().map_err(|_| {
+                    crate::errors::AtomiqError::Storage(
+                        crate::errors::StorageError::CorruptedData("Invalid tx_index in transaction index".to_string())
+                    )
+                })?;
+                
+                return Ok(Some((height, tx_index)));
             }
         }
         

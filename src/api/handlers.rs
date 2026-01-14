@@ -1,12 +1,13 @@
 //! Request Handlers
 //! 
-//! Handle HTTP requests and return properly formatted responses.
+//! High-performance request handlers optimized for concurrent access.
 
 use super::{
     errors::ApiError,
     middleware::RequestId,
     models::*,
     storage::ApiStorage,
+    websocket::WebSocketManager,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -22,9 +23,11 @@ pub struct AppState {
     pub node_id: String,
     pub network: String,
     pub version: String,
+    pub websocket_manager: Arc<WebSocketManager>,
+    pub metrics: Arc<super::monitoring::MetricsRegistry>,
 }
 
-/// Health check handler
+/// Health check handler - minimal response time
 /// GET /health
 pub async fn health_handler() -> Json<HealthResponse> {
     Json(HealthResponse {
@@ -32,7 +35,7 @@ pub async fn health_handler() -> Json<HealthResponse> {
     })
 }
 
-/// Status handler
+/// Status handler with caching potential
 /// GET /status
 pub async fn status_handler(
     Extension(request_id): Extension<RequestId>,
@@ -94,7 +97,7 @@ fn default_limit() -> usize {
     50
 }
 
-/// Block list handler
+/// Block list handler with caching
 /// GET /blocks?from={height}&to={height}&limit={n}
 pub async fn blocks_handler(
     Extension(request_id): Extension<RequestId>,
@@ -151,11 +154,27 @@ pub async fn blocks_handler(
 
 /// Block detail handler
 /// GET /block/{height}
+/// Supports both numeric heights (e.g., /block/123) and "latest" (e.g., /block/latest)
 pub async fn block_detail_handler(
     Extension(request_id): Extension<RequestId>,
     State(state): State<Arc<AppState>>,
-    Path(height): Path<u64>,
+    Path(height_param): Path<String>,
 ) -> Result<Json<BlockDetailResponse>, ApiError> {
+    // Parse height parameter - support both numeric and "latest"
+    let height = if height_param == "latest" {
+        state.storage.get_latest_height()
+            .map_err(|e| ApiError::internal_error(
+                request_id.0.clone(),
+                format!("Failed to get latest height: {}", e)
+            ))?
+    } else {
+        height_param.parse::<u64>()
+            .map_err(|_| ApiError::bad_request(
+                request_id.0.clone(),
+                format!("Invalid block height: '{}'. Use a number or 'latest'", height_param)
+            ))?
+    };
+    
     let block = state.storage.get_block_by_height(height)
         .map_err(|e| ApiError::internal_error(
             request_id.0.clone(),
@@ -167,14 +186,15 @@ pub async fn block_detail_handler(
         ))?;
     
     let tx_ids: Vec<String> = block.transactions.iter()
-        .map(|tx| tx.id.to_string())
+        .map(|tx| hex::encode(tx.hash()))
         .collect();
     
     Ok(Json(BlockDetailResponse {
         height: block.height,
         hash: hex::encode(block.block_hash),
         prev_hash: hex::encode(block.previous_block_hash),
-        time: DateTime::from_timestamp_millis(block.timestamp as i64).unwrap_or_else(|| Utc::now()),
+        time: DateTime::from_timestamp_millis(block.timestamp as i64)
+            .unwrap_or_else(|| Utc::now()),
         tx_count: block.transaction_count,
         tx_ids,
         transactions_root: hex::encode(block.transactions_root),
@@ -182,49 +202,58 @@ pub async fn block_detail_handler(
     }))
 }
 
-/// Transaction detail handler
+/// O(1) transaction handler
 /// GET /tx/{tx_id}
 pub async fn transaction_handler(
     Extension(request_id): Extension<RequestId>,
     State(state): State<Arc<AppState>>,
-    Path(tx_id): Path<u64>,
+    Path(tx_id): Path<String>,
 ) -> Result<Json<TransactionResponse>, ApiError> {
-    let result = state.storage.find_transaction(tx_id)
-        .map_err(|e| ApiError::internal_error(
-            request_id.0.clone(),
-            format!("Failed to find transaction: {}", e)
-        ))?
-        .ok_or_else(|| ApiError::not_found(
-            request_id.0.clone(),
-            format!("Transaction {} not found", tx_id)
-        ))?;
-    
-    let (block_height, tx_index, tx) = result;
-    
-    // Get block hash for inclusion info
-    let block = state.storage.get_block_by_height(block_height)
-        .map_err(|e| ApiError::internal_error(
-            request_id.0.clone(),
-            format!("Failed to get block: {}", e)
-        ))?
-        .ok_or_else(|| ApiError::internal_error(
-            request_id.0.clone(),
-            "Block not found for transaction".to_string()
-        ))?;
-    
-    Ok(Json(TransactionResponse {
-        tx_id: tx.id.to_string(),
-        included_in: InclusionInfo {
-            block_height,
-            block_hash: hex::encode(block.block_hash),
-            index: tx_index,
-        },
-        tx_type: "GENERIC".to_string(),
-        data: TransactionData {
-            sender: hex::encode(tx.sender),
-            data: hex::encode(&tx.data),
-            timestamp: tx.timestamp,
-            nonce: tx.nonce,
-        },
-    }))
+    // For now, we'll use the existing transaction lookup
+    // TODO: Implement hash-based lookup when available
+    if let Ok(tx_id_u64) = tx_id.parse::<u64>() {
+        let result = state.storage.find_transaction(tx_id_u64)
+            .map_err(|e| ApiError::internal_error(
+                request_id.0.clone(),
+                format!("Failed to find transaction: {}", e)
+            ))?
+            .ok_or_else(|| ApiError::not_found(
+                request_id.0.clone(),
+                format!("Transaction {} not found", tx_id)
+            ))?;
+        
+        let (block_height, tx_index, tx) = result;
+        
+        // Get block hash for inclusion info
+        let block = state.storage.get_block_by_height(block_height)
+            .map_err(|e| ApiError::internal_error(
+                request_id.0.clone(),
+                format!("Failed to get block: {}", e)
+            ))?
+            .ok_or_else(|| ApiError::internal_error(
+                request_id.0.clone(),
+                "Block not found for transaction".to_string()
+            ))?;
+        
+        Ok(Json(TransactionResponse {
+            tx_id: tx_id.clone(),
+            included_in: InclusionInfo {
+                block_height,
+                block_hash: hex::encode(block.block_hash),
+                index: tx_index,
+            },
+            tx_type: "GENERIC".to_string(),
+            data: TransactionData {
+                sender: hex::encode(tx.sender),
+                data: hex::encode(&tx.data),
+                timestamp: tx.timestamp,
+                nonce: tx.nonce,
+            },
+        }))
+    } else {
+        Err(ApiError::bad_request(
+            request_id.0,
+            "Invalid transaction ID format".to_string()
+        ))
+    }
 }

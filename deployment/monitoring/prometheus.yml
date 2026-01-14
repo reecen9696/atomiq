@@ -1,0 +1,34 @@
+# Prometheus configuration for Atomiq Blockchain monitoring
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+# Load rules once and periodically evaluate them
+rule_files: []
+
+# Scrape configurations
+scrape_configs:
+  # Atomiq blockchain metrics
+  - job_name: "atomiq-blockchain"
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["blockchain:9090"]
+    metrics_path: /metrics
+
+  # System metrics (if node_exporter is available)
+  - job_name: "node"
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["node-exporter:9100"]
+
+  # Nginx metrics (if nginx-exporter is available)
+  - job_name: "nginx"
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["nginx-exporter:9113"]

@@ -1,5 +1,31 @@
+# Build artifacts
 target/
 Cargo.lock
+
+# Database and storage
 blockchain_data/
-.DS_Store
+DB/
+*.db
+
+# Logs
 *.log
+logs/
+
+# System files
+.DS_Store
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Certificates (don't commit private keys)
+deployment/certs/*.key
+deployment/certs/*.pem
+
+# Environment
+.env
+.env.local
