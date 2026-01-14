@@ -80,6 +80,7 @@ pub fn app_state_to_game_state(app_state: &AppState) -> Option<crate::api::games
             game_processor: game_processor.clone(),
             tx_sender: tx_sender.clone(),
             finalization_waiter: app_state.finalization_waiter.clone(),
+            fairness_waiter: app_state.fairness_waiter.clone(),
         })
     } else {
         None

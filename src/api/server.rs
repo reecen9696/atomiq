@@ -13,6 +13,7 @@ use super::{
 use crate::{
     storage::OptimizedStorage,
     blockchain_game_processor::BlockchainGameProcessor,
+    fairness::{FairnessWaiter, FairnessWorker},
     common::types::Transaction,
     finalization::FinalizationWaiter,
     TransactionSender,
@@ -200,6 +201,38 @@ impl ApiServer {
             info!("⏭️ Casino games disabled");
             (None, None)
         };
+
+        // Fairness pipeline: compute+persist outcomes asynchronously after commit.
+        // This keeps commit latency low while allowing the API to wait for fairness persistence.
+        let fairness_waiter = if self.config.enable_games {
+            Some(Arc::new(FairnessWaiter::new(self.storage.clone())))
+        } else {
+            None
+        };
+
+        if self.config.enable_games {
+            if let (Some(processor), Some(finalization_waiter), Some(waiter)) = (
+                game_processor.clone(),
+                self.finalization_waiter.clone(),
+                fairness_waiter.clone(),
+            ) {
+                tracing::info!("🧮 Starting fairness worker (async persistence)");
+
+                // Bounded concurrency: keep CPU use predictable under load.
+                let max_concurrency = 64;
+                let publisher = waiter.publisher();
+
+                let _worker = FairnessWorker::spawn(
+                    self.storage.clone(),
+                    processor,
+                    finalization_waiter,
+                    publisher,
+                    max_concurrency,
+                );
+            } else if game_processor.is_some() {
+                tracing::warn!("Fairness worker not started (missing finalization support)");
+            }
+        }
         
         let state = Arc::new(AppState {
             storage: ApiStorage::new(self.storage.clone()),
@@ -211,6 +244,7 @@ impl ApiServer {
             game_processor,
             tx_sender,
             finalization_waiter: self.finalization_waiter.clone(),
+            fairness_waiter,
         });
 
         create_router(state)

@@ -7,6 +7,7 @@
 use crate::{
     blockchain_game_processor::{BlockchainGameProcessor, GameBetData, BlockchainGameResult},
     common::types::{Transaction, TransactionType},
+    fairness::{FairnessError, FairnessWaiter},
     games::{
         types::{CoinFlipPlayRequest, GameResponse, Token, VerifyVRFRequest, VerifyVRFResponse, GameType},
     },
@@ -35,6 +36,9 @@ pub struct GameApiState {
     
     /// Finalization waiter for awaiting block commits (optional - without this, games return pending status)
     pub finalization_waiter: Option<Arc<FinalizationWaiter>>,
+
+    /// Fairness waiter for awaiting persisted game results (optional - without this, games may race and return pending)
+    pub fairness_waiter: Option<Arc<FairnessWaiter>>,
 }
 
 /// Play coin flip game by processing transaction immediately on blockchain
@@ -113,9 +117,38 @@ pub async fn play_coinflip(
             let block_hash = block_event.hash;
             let block_height = block_event.height;
             
-            // Process game transaction with real blockchain data
-            let result = state.game_processor.process_game_transaction(&transaction, block_hash, block_height)
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Game processing failed: {}", e)))?;
+            // Wait for fairness record to be persisted by the background fairness worker.
+            // This keeps request path light and avoids adding work to the block commit hot path.
+            let result = if let Some(fairness_waiter) = &state.fairness_waiter {
+                let timeout = std::time::Duration::from_secs(10);
+                match fairness_waiter
+                    .wait_for_game_result(tx_id, block_height, block_hash, timeout)
+                    .await
+                {
+                    Ok(result) => result,
+                    Err(FairnessError::Timeout { .. }) => {
+                        return Ok(Json(GameResponse::Pending {
+                            game_id: format!("tx-{}", tx_id),
+                            message: Some(
+                                "Transaction finalized but fairness record is not yet available. Retry shortly."
+                                    .to_string(),
+                            ),
+                        }));
+                    }
+                    Err(e) => {
+                        return Err((
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("Fairness wait failed: {}", e),
+                        ));
+                    }
+                }
+            } else {
+                // Fallback: compute and persist inline (legacy behavior)
+                state
+                    .game_processor
+                    .process_game_transaction(&transaction, block_hash, block_height)
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Game processing failed: {}", e)))?
+            };
             
             // Convert to API response format
             use crate::games::types::{PlayerInfo, PaymentInfo, VRFBundle, GameData, CoinChoice};

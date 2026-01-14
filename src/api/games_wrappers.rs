@@ -36,6 +36,7 @@ pub async fn play_coinflip(
         game_processor: game_processor.clone(),
         tx_sender: tx_sender.clone(),
         finalization_waiter: app_state.finalization_waiter.clone(),
+        fairness_waiter: app_state.fairness_waiter.clone(),
     };
     
     // Call the original handler
@@ -61,6 +62,7 @@ pub async fn get_game_result(
         game_processor: game_processor.clone(),
         tx_sender: tx_sender.clone(),
         finalization_waiter: app_state.finalization_waiter.clone(),
+        fairness_waiter: app_state.fairness_waiter.clone(),
     };
     
     // Call the original handler
@@ -86,6 +88,7 @@ pub async fn verify_vrf(
         game_processor: game_processor.clone(),
         tx_sender: tx_sender.clone(),
         finalization_waiter: app_state.finalization_waiter.clone(),
+        fairness_waiter: app_state.fairness_waiter.clone(),
     };
     
     // Call the original handler
@@ -110,6 +113,7 @@ pub async fn verify_game_by_id(
         storage: app_state.storage.get_raw_storage(),
         game_processor: game_processor.clone(),
         finalization_waiter: app_state.finalization_waiter.clone(),
+        fairness_waiter: app_state.fairness_waiter.clone(),
         tx_sender: tx_sender.clone(),
     };
     

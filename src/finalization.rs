@@ -75,6 +75,14 @@ impl FinalizationWaiter {
         
         waiter
     }
+
+    /// Subscribe to the stream of committed-block events.
+    ///
+    /// This is intended for internal background workers (e.g. fairness persistence)
+    /// that need a low-latency signal, while still treating RocksDB as the source of truth.
+    pub fn subscribe(&self) -> broadcast::Receiver<BlockCommittedEvent> {
+        self.event_receiver.subscribe()
+    }
     
     /// Spawn background task to process block commit events
     fn spawn_event_processor(&self) {
@@ -84,7 +92,17 @@ impl FinalizationWaiter {
         
         tokio::spawn(async move {
             tracing::debug!("Finalization event processor started");
-            while let Ok(event) = event_rx.recv().await {
+            loop {
+                let event = match event_rx.recv().await {
+                    Ok(event) => event,
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        // Under high throughput we may lag; do NOT exit the loop.
+                        tracing::warn!("Finalization waiter lagged; skipped {} events", skipped);
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                };
+
                 tracing::trace!("Received finalization event for block {} with {} transactions", event.height, event.transactions.len());
                 // Process transaction waiters
                 let mut completed_tx_ids = Vec::new();

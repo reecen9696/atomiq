@@ -11,6 +11,7 @@ use super::{
 };
 use crate::{
     blockchain_game_processor::{load_vrf_public_key, BlockchainGameProcessor, GameBetData},
+    fairness::FairnessWaiter,
     finalization::FinalizationWaiter,
     game_store,
 };
@@ -36,6 +37,7 @@ pub struct AppState {
     pub game_processor: Option<Arc<BlockchainGameProcessor>>,
     pub tx_sender: Option<mpsc::UnboundedSender<crate::common::types::Transaction>>,
     pub finalization_waiter: Option<Arc<FinalizationWaiter>>,
+    pub fairness_waiter: Option<Arc<FairnessWaiter>>,
 }
 
 /// Health check handler - minimal response time
