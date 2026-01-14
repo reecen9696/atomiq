@@ -190,4 +190,9 @@ impl ApiStorage {
         // This would check sync status in a multi-node setup
         false
     }
+
+    /// Get the underlying raw storage for game processors
+    pub fn get_raw_storage(&self) -> Arc<OptimizedStorage> {
+        self.storage.clone()
+    }
 }

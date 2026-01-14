@@ -8,7 +8,8 @@ use crate::{
     config::AtomiqConfig,
     storage::OptimizedStorage,
     AtomiqApp, BlockchainMetrics,
-    games::{PendingGamesPool, VRFGameEngine, GameProcessor, GameResult},
+    games::{PendingGamesPool, VRFGameEngine, GameProcessor},
+    finalization::BlockCommittedEvent,
 };
 use std::{
     sync::{
@@ -17,7 +18,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, broadcast};
 use tokio::time::interval;
 
 /// Direct commit engine that produces blocks without consensus overhead
@@ -32,7 +33,9 @@ pub struct DirectCommitEngine {
     // Game support
     pub games_pool: Arc<PendingGamesPool>,
     pub game_processor: Arc<GameProcessor>,
-    pending_game_results: Arc<RwLock<Vec<GameResult>>>,
+    pending_game_results: Arc<RwLock<Vec<crate::games::GameResult>>>,
+    // Finalization events
+    event_publisher: broadcast::Sender<BlockCommittedEvent>,
 }
 
 impl DirectCommitEngine {
@@ -47,6 +50,9 @@ impl DirectCommitEngine {
         let game_processor = Arc::new(GameProcessor::new(vrf_engine));
         let games_pool = Arc::new(PendingGamesPool::new());
         
+        // Create event publisher for finalization notifications
+        let (event_publisher, _) = broadcast::channel(10000); // Buffer up to 10000 events for high throughput
+        
         Self {
             app,
             storage,
@@ -58,7 +64,21 @@ impl DirectCommitEngine {
             games_pool,
             game_processor,
             pending_game_results: Arc::new(RwLock::new(Vec::new())),
+            event_publisher,
         }
+    }
+    
+    /// Get event publisher for finalization waiter creation
+    pub fn event_publisher(&self) -> broadcast::Sender<BlockCommittedEvent> {
+        self.event_publisher.clone()
+    }
+
+    /// Get the underlying storage used by the blockchain.
+    ///
+    /// Important: API query endpoints like `/status`, `/blocks`, `/block/:height`, and `/tx/:id`
+    /// rely on indices written by `commit_block_to_storage`, so they must use this same storage.
+    pub fn storage(&self) -> Arc<OptimizedStorage> {
+        self.storage.clone()
     }
 
     /// Start the direct commit engine
@@ -158,6 +178,59 @@ impl DirectCommitEngine {
         
         // Commit to storage (includes transaction indexing and game results)
         self.commit_block_to_storage(next_height, &block_data, &block.block_hash)?;
+        
+        // Emit finalization event AFTER storage commit
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        
+        // Convert Block transactions to common::types::Transaction
+        let common_transactions: Vec<crate::common::types::Transaction> = block.transactions.iter().map(|tx| {
+            crate::common::types::Transaction {
+                id: tx.id,
+                sender: tx.sender,
+                data: tx.data.clone(),
+                timestamp: tx.timestamp,
+                nonce: tx.nonce,
+                tx_type: crate::common::types::TransactionType::Standard, // Default to Standard
+            }
+        }).collect();
+        
+        let finalization_event = BlockCommittedEvent::new(
+            next_height,
+            block.block_hash,
+            common_transactions.clone(),
+            timestamp,
+        );
+        
+        // Broadcast to all waiters
+        let subscriber_count = self.event_publisher.receiver_count();
+        match self.event_publisher.send(finalization_event) {
+            Ok(receivers) => {
+                if !common_transactions.is_empty() {
+                    tracing::debug!(
+                        "Block {} finalized with {} transactions, notified {} subscribers",
+                        next_height,
+                        common_transactions.len(),
+                        receivers
+                    );
+                    for tx in &common_transactions {
+                        tracing::trace!("  - Transaction {} finalized", tx.id);
+                    }
+                }
+            }
+            Err(e) => {
+                if !common_transactions.is_empty() {
+                    tracing::warn!(
+                        "Failed to broadcast finalization event for block {} ({} subscribers): {:?}",
+                        next_height,
+                        subscriber_count,
+                        e
+                    );
+                }
+            }
+        }
         
         // Process and complete pending games (send results to waiting clients)
         let game_results = std::mem::take(&mut *pending_games);
@@ -437,7 +510,7 @@ impl DirectCommitEngine {
     }
     
     /// Submit a game result for inclusion in next block
-    pub async fn submit_game_result(&self, game_result: GameResult) {
+    pub async fn submit_game_result(&self, game_result: crate::games::GameResult) {
         let mut pending = self.pending_game_results.write().await;
         pending.push(game_result);
     }

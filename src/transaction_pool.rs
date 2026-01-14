@@ -80,9 +80,17 @@ impl TransactionPool {
         self.check_pool_capacity(current_pool_size)?;
         self.log_capacity_warnings(current_pool_size);
 
-        // Assign ID and timestamp
-        let tx_id = self.assign_transaction_id();
-        transaction.id = tx_id;
+        // Assign ID if not already set, otherwise preserve existing ID
+        let tx_id = if transaction.id == 0 {
+            let new_id = self.assign_transaction_id();
+            transaction.id = new_id;
+            new_id
+        } else {
+            // Preserve existing ID (e.g., from external systems)
+            transaction.id
+        };
+        
+        // Update timestamp
         transaction.timestamp = Self::get_current_timestamp_ms()?;
 
         // Insert transaction using policy

@@ -231,7 +231,7 @@ impl AtomiqConfig {
                 block_sync_request_limit: 1000,
                 block_sync_trigger_min_view_difference: 1,
                 progress_msg_buffer_capacity: 50000,
-                direct_commit_interval_ms: 5, // Ultra-fast for high performance
+                direct_commit_interval_ms: 10, // Balanced for reliability and performance
             },
             performance: PerformanceConfig {
                 target_tps: Some(100_000),

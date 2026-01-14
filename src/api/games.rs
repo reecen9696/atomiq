@@ -11,6 +11,7 @@ use crate::{
         types::{CoinFlipPlayRequest, GameResponse, Token, VerifyVRFRequest, VerifyVRFResponse, GameType},
     },
     storage::OptimizedStorage,
+    finalization::FinalizationWaiter,
 };
 use axum::{
     extract::{Path, State},
@@ -31,6 +32,9 @@ pub struct GameApiState {
     
     /// Transaction submission channel (to blockchain)
     pub tx_sender: tokio::sync::mpsc::UnboundedSender<Transaction>,
+    
+    /// Finalization waiter for awaiting block commits (optional - without this, games return pending status)
+    pub finalization_waiter: Option<Arc<FinalizationWaiter>>,
 }
 
 /// Play coin flip game by processing transaction immediately on blockchain
@@ -67,59 +71,122 @@ pub async fn play_coinflip(
         1, // Nonce - in production, track per-player nonces
     );
     
-    // Simulate block finalization for immediate processing
-    use sha2::{Sha256, Digest};
-    let block_height = 100000u64; // In production, get from blockchain
-    let mut hasher = Sha256::new();
-    hasher.update(&block_height.to_be_bytes());
-    hasher.update(b"current_block_consensus_data");
-    hasher.update(&transaction.data);
-    let block_hash = hasher.finalize();
-    let block_hash_array: [u8; 32] = block_hash.into();
-    
-    // Process game transaction immediately with VRF
-    let result = state.game_processor.process_game_transaction(&transaction, block_hash_array, block_height)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Game processing failed: {}", e)))?;
-    
-    // Convert to API response format
-    use crate::games::types::{PlayerInfo, PaymentInfo, VRFBundle, GameData, CoinChoice};
-    
-    let game_result = crate::games::types::GameResult {
-        game_id: format!("tx-{}", tx_id),
-        game_type: result.game_type,
-        player: PlayerInfo {
-            player_id: result.player_address,
-            wallet_signature: None,
-        },
-        payment: PaymentInfo {
-            token: result.token,
-            bet_amount: result.bet_amount as f64 / 1_000_000_000.0, // Convert lamports to SOL
-            payout_amount: result.payout as f64 / 1_000_000_000.0,
-            settlement_tx_id: None,
-        },
-        vrf: VRFBundle {
-            vrf_output: hex::encode(&result.vrf_output),
-            vrf_proof: hex::encode(&result.vrf_proof),
-            public_key: "blockchain_vrf_key".to_string(),
-            input_message: format!("tx-{}", result.transaction_id),
-        },
-        outcome: result.outcome,
-        timestamp: result.timestamp,
-        game_data: GameData::CoinFlip {
-            player_choice: result.player_choice,
-            result_choice: match result.coin_result {
-                crate::games::types::CoinFlipResult::Heads => CoinChoice::Heads,
-                crate::games::types::CoinFlipResult::Tails => CoinChoice::Tails,
-            },
-        },
-        metadata: None,
+    // IMPORTANT: Register finalization waiter BEFORE submitting transaction
+    // This prevents race condition where block is created before waiter is registered
+    let finalization_future = if let Some(finalization_waiter) = &state.finalization_waiter {
+        let timeout = std::time::Duration::from_secs(10);
+        tracing::debug!("Pre-registering finalization waiter for transaction {}", tx_id);
+        Some(finalization_waiter.wait_for_transaction(tx_id, timeout))
+    } else {
+        None
     };
     
-    // Return complete game result immediately
-    Ok(Json(GameResponse::Complete {
-        game_id: format!("tx-{}", tx_id),
-        result: game_result,
-    }))
+    // Submit transaction to blockchain AFTER waiter is registered
+    tracing::debug!("Submitting transaction {} to blockchain", tx_id);
+    state.tx_sender.send(transaction.clone())
+        .map_err(|e| {
+            tracing::error!("Failed to submit transaction {}: {}", tx_id, e);
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to submit transaction: {}", e))
+        })?;
+    tracing::debug!("Transaction {} submitted successfully", tx_id);
+    
+    // Now wait for the finalization result
+    if let Some(finalization_future) = finalization_future {
+        tracing::info!("Waiting for finalization of transaction {} (timeout: 10s)", tx_id);
+        let wait_start = std::time::Instant::now();
+        let finalization_result = finalization_future.await;
+        let wait_duration = wait_start.elapsed();
+        tracing::debug!("Finalization wait completed in {:?}", wait_duration);
+    
+    match finalization_result {
+        Ok(block_event) => {
+            tracing::info!("Transaction {} finalized in block {} (height: {})", tx_id, hex::encode(&block_event.hash[..8]), block_event.height);
+            // Verify transaction is in the committed block
+            if !block_event.contains_transaction(tx_id) {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Transaction {} not found in committed block {}", tx_id, block_event.height)
+                ));
+            }
+            
+            // Get actual block hash and height from committed block
+            let block_hash = block_event.hash;
+            let block_height = block_event.height;
+            
+            // Process game transaction with real blockchain data
+            let result = state.game_processor.process_game_transaction(&transaction, block_hash, block_height)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Game processing failed: {}", e)))?;
+            
+            // Convert to API response format
+            use crate::games::types::{PlayerInfo, PaymentInfo, VRFBundle, GameData, CoinChoice};
+            
+            let game_result = crate::games::types::GameResult {
+                game_id: format!("tx-{}", tx_id),
+                game_type: result.game_type,
+                player: PlayerInfo {
+                    player_id: result.player_address,
+                    wallet_signature: None,
+                },
+                payment: PaymentInfo {
+                    token: result.token,
+                    bet_amount: result.bet_amount as f64 / 1_000_000_000.0, // Convert lamports to SOL
+                    payout_amount: result.payout as f64 / 1_000_000_000.0,
+                    settlement_tx_id: None,
+                },
+                vrf: VRFBundle {
+                    vrf_output: hex::encode(&result.vrf_output),
+                    vrf_proof: hex::encode(&result.vrf_proof),
+                    public_key: hex::encode(state.game_processor.get_public_key()),
+                    input_message: result.vrf_input_message.clone(),
+                },
+                outcome: result.outcome,
+                timestamp: result.timestamp,
+                game_data: GameData::CoinFlip {
+                    player_choice: result.player_choice,
+                    result_choice: match result.coin_result {
+                        crate::games::types::CoinFlipResult::Heads => CoinChoice::Heads,
+                        crate::games::types::CoinFlipResult::Tails => CoinChoice::Tails,
+                    },
+                },
+                metadata: Some(serde_json::json!({
+                    "block_height": block_height,
+                    "block_hash": hex::encode(block_hash),
+                    "finalization_confirmed": true,
+                    "vrf_meta": {
+                        "signing_context": "HotstuffCasino",
+                        "signature_scheme": "sr25519",
+                        "vrf_output_derivation": "sha256(vrf_proof)",
+                        "input_message_encoding": "utf8",
+                        "coinflip_result_rule": "heads if vrf_output[0] is even else tails"
+                    }
+                })),
+            };
+            
+            // Return complete game result with finalization proof
+            Ok(Json(GameResponse::Complete {
+                game_id: format!("tx-{}", tx_id),
+                result: game_result,
+            }))
+        }
+        Err(e) => {
+            // Timeout or error - return pending status
+            log::warn!("Game finalization timeout for tx {}: {}", tx_id, e);
+            Ok(Json(GameResponse::Pending {
+                game_id: format!("tx-{}", tx_id),
+                message: Some(format!(
+                    "Transaction submitted but not yet finalized. Please check status in a moment. ({})",
+                    e
+                )),
+            }))
+        }
+    }
+    } else {
+        // No finalization waiter available - return pending response immediately
+        Ok(Json(GameResponse::Pending {
+            game_id: format!("tx-{}", tx_id),
+            message: Some("Transaction submitted. Check status with GET /api/game/:id".to_string()),
+        }))
+    }
 }
 
 /// Get game result by transaction ID
@@ -154,8 +221,8 @@ pub async fn get_game_result(
             vrf: VRFBundle {
                 vrf_output: hex::encode(&result.vrf_output),
                 vrf_proof: hex::encode(&result.vrf_proof),
-                public_key: "blockchain_vrf_key".to_string(), // TODO: Get actual public key
-                input_message: format!("tx-{}", result.transaction_id),
+                public_key: hex::encode(state.game_processor.get_public_key()),
+                input_message: result.vrf_input_message.clone(),
             },
             outcome: result.outcome,
             timestamp: result.timestamp,
@@ -172,7 +239,18 @@ pub async fn get_game_result(
                     },
                 },
             },
-            metadata: None,
+            metadata: Some(serde_json::json!({
+                "block_height": result.block_height,
+                "block_hash": hex::encode(result.block_hash),
+                "finalization_confirmed": true,
+                "vrf_meta": {
+                    "signing_context": "HotstuffCasino",
+                    "signature_scheme": "sr25519",
+                    "vrf_output_derivation": "sha256(vrf_proof)",
+                    "input_message_encoding": "utf8",
+                    "coinflip_result_rule": "heads if vrf_output[0] is even else tails"
+                }
+            })),
         };
         
         Ok(Json(GameResponse::Complete {
@@ -232,12 +310,14 @@ pub async fn verify_vrf(
         coin_result: crate::games::types::CoinFlipResult::Heads,
         vrf_proof: vrf_proof.clone(),
         vrf_output: vrf_output.clone(),
+        vrf_input_message: request.input_message.clone(),
         payout: 0,
         timestamp: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs(),
         block_height: 0,
+        block_hash: [0u8; 32],
     };
     
     // Perform detailed VRF verification

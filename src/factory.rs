@@ -268,12 +268,15 @@ pub trait BlockchainHandle: Send + Sync {
     
     /// Gracefully shutdown the blockchain
     fn shutdown(&mut self) -> AtomiqResult<()>;
+    
+    /// Downcast to concrete type (for accessing engine-specific features)
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// Handle for DirectCommit mode blockchain
 pub struct DirectCommitHandle {
-    app: Arc<RwLock<AtomiqApp>>,
-    engine: Arc<DirectCommitEngine>,
+    pub(crate) app: Arc<RwLock<AtomiqApp>>,
+    pub engine: Arc<DirectCommitEngine>,
 }
 
 impl BlockchainHandle for DirectCommitHandle {
@@ -284,6 +287,17 @@ impl BlockchainHandle for DirectCommitHandle {
     fn shutdown(&mut self) -> AtomiqResult<()> {
         self.engine.stop();
         Ok(())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl DirectCommitHandle {
+    /// Get a reference to the application for transaction submission
+    pub fn app(&self) -> &Arc<RwLock<AtomiqApp>> {
+        &self.app
     }
 }
 
@@ -301,6 +315,10 @@ impl BlockchainHandle for SingleValidatorHandle {
         // HotStuff replica handles shutdown automatically
         Ok(())
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 /// Handle for mock blockchain (no consensus)
@@ -315,6 +333,10 @@ impl BlockchainHandle for MockHandle {
 
     fn shutdown(&mut self) -> AtomiqResult<()> {
         Ok(())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 

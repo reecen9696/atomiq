@@ -40,9 +40,13 @@ pub struct BlockchainGameResult {
     pub outcome: GameOutcome,
     pub vrf_proof: Vec<u8>,
     pub vrf_output: Vec<u8>,
+    /// Exact input message that was signed to produce the VRF proof
+    pub vrf_input_message: String,
     pub payout: u64,
     pub timestamp: u64,
     pub block_height: u64,
+    /// Finalized block hash used as VRF context
+    pub block_hash: [u8; 32],
 }
 
 /// Blockchain-side game processor that generates VRF outcomes
@@ -152,11 +156,18 @@ impl BlockchainGameProcessor {
             player_choice: bet_data.player_choice,
             coin_result,
             outcome,
-            vrf_proof: hex::decode(&vrf_bundle.vrf_proof).unwrap_or_default(),
+            vrf_proof: hex::decode(&vrf_bundle.vrf_proof).map_err(|e| {
+                AtomiqError::Transaction(TransactionError::ExecutionFailed(format!(
+                    "VRF proof decode failed: {}",
+                    e
+                )))
+            })?,
             vrf_output,
+            vrf_input_message: vrf_bundle.input_message,
             payout,
             timestamp: transaction.timestamp,
             block_height,
+            block_hash,
         };
         
         // Store result in blockchain state

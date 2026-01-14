@@ -51,6 +51,10 @@ struct Args {
     /// Path to TLS private key file (PEM format)
     #[arg(long)]
     key_path: Option<String>,
+    
+    /// Enable casino game endpoints
+    #[arg(long, default_value = "true")]
+    enable_games: bool,
 }
 
 #[tokio::main]
@@ -99,6 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         enable_metrics: true,
         max_concurrent_requests: 5000,
         preload_recent_blocks: 1000,
+        enable_games: args.enable_games,
     };
 
     // Create and run server

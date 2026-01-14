@@ -10,11 +10,18 @@ use super::{
     websocket::WebSocketManager,
     monitoring,
 };
-use crate::storage::OptimizedStorage;
+use crate::{
+    storage::OptimizedStorage,
+    blockchain_game_processor::BlockchainGameProcessor,
+    common::types::Transaction,
+    finalization::FinalizationWaiter,
+    TransactionSender,
+};
 use std::{net::SocketAddr, sync::Arc, time::Duration};
-use tokio::signal;
+use tokio::{signal, sync::mpsc};
 use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
 use tracing::{info, warn};
+use schnorrkel::Keypair;
 
 /// API server configuration
 #[derive(Debug, Clone)]
@@ -34,6 +41,9 @@ pub struct ApiConfig {
     pub max_concurrent_requests: usize,
     pub enable_metrics: bool,
     pub preload_recent_blocks: usize,
+    
+    // Game settings
+    pub enable_games: bool,
 }
 
 impl Default for ApiConfig {
@@ -54,6 +64,9 @@ impl Default for ApiConfig {
             max_concurrent_requests: 50_000, // Support 50K concurrent requests
             enable_metrics: true,
             preload_recent_blocks: 1_000, // Cache last 1K blocks on startup
+            
+            // Game defaults
+            enable_games: true, // Enable casino games by default
         }
     }
 }
@@ -62,11 +75,33 @@ impl Default for ApiConfig {
 pub struct ApiServer {
     config: ApiConfig,
     storage: Arc<OptimizedStorage>,
+    finalization_waiter: Option<Arc<FinalizationWaiter>>,
+    blockchain_tx_sender: Option<TransactionSender>,
 }
 
 impl ApiServer {
     pub fn new(config: ApiConfig, storage: Arc<OptimizedStorage>) -> Self {
-        Self { config, storage }
+        Self { 
+            config, 
+            storage,
+            finalization_waiter: None,
+            blockchain_tx_sender: None,
+        }
+    }
+
+    /// Create ApiServer with finalization support
+    pub fn with_finalization(
+        config: ApiConfig, 
+        storage: Arc<OptimizedStorage>,
+        finalization_waiter: Arc<FinalizationWaiter>,
+        blockchain_tx_sender: TransactionSender,
+    ) -> Self {
+        Self {
+            config,
+            storage,
+            finalization_waiter: Some(finalization_waiter),
+            blockchain_tx_sender: Some(blockchain_tx_sender),
+        }
     }
 
     /// Start the API server
@@ -118,6 +153,51 @@ impl ApiServer {
         let websocket_manager = Arc::new(WebSocketManager::new(self.storage.clone()));
         let metrics = Arc::new(monitoring::MetricsRegistry::new());
         
+        // Initialize game components if enabled
+        let (game_processor, tx_sender) = if self.config.enable_games {
+            info!("🎮 Initializing casino game components...");
+            
+            // Generate a keypair for VRF (in production, load from secure storage)
+            let keypair = Keypair::generate();
+            let processor = Arc::new(BlockchainGameProcessor::new(keypair));
+            
+            // Use real blockchain connection if available, otherwise create dummy channel
+            let sender = if let Some(blockchain_sender) = &self.blockchain_tx_sender {
+                info!("🔗 Connected to blockchain for transaction submission");
+                let sender_clone = blockchain_sender.clone();
+                let (tx, mut rx) = mpsc::unbounded_channel::<Transaction>();
+                
+                // Forward transactions to blockchain
+                tokio::spawn(async move {
+                    while let Some(transaction) = rx.recv().await {
+                        if let Err(e) = sender_clone.send(transaction) {
+                            tracing::error!("Failed to submit transaction to blockchain: {}", e);
+                        }
+                    }
+                });
+                
+                tx
+            } else {
+                info!("⚠️  No blockchain connection - transactions will not be processed");
+                let (sender, mut receiver) = mpsc::unbounded_channel::<Transaction>();
+                
+                // Dummy handler that discards transactions
+                tokio::spawn(async move {
+                    while let Some(_transaction) = receiver.recv().await {
+                        // Transactions are discarded in standalone mode
+                    }
+                });
+                
+                sender
+            };
+            
+            info!("✅ Casino game components initialized");
+            (Some(processor), Some(sender))
+        } else {
+            info!("⏭️ Casino games disabled");
+            (None, None)
+        };
+        
         let state = Arc::new(AppState {
             storage: ApiStorage::new(self.storage.clone()),
             node_id: self.config.node_id.clone(),
@@ -125,6 +205,9 @@ impl ApiServer {
             version: self.config.version.clone(),
             websocket_manager,
             metrics,
+            game_processor,
+            tx_sender,
+            finalization_waiter: self.finalization_waiter.clone(),
         });
 
         create_router(state)
@@ -173,6 +256,15 @@ impl ApiServer {
         info!("   GET  /blocks          - Block list");
         info!("   GET  /block/:height   - Block details");
         info!("   GET  /tx/:id          - Transaction lookup");
+        
+        if self.config.enable_games {
+            info!("🎮 Casino game endpoints:");
+            info!("   POST /api/coinflip/play     - Play coinflip");
+            info!("   GET  /api/game/:id          - Get game result");
+            info!("   POST /api/verify/vrf        - Verify VRF proof");
+            info!("   GET  /api/verify/game/:id   - Verify game by ID");
+            info!("   GET  /api/tokens            - List supported tokens");
+        }
     }
 }
 

@@ -9,6 +9,10 @@ use super::{
     storage::ApiStorage,
     websocket::WebSocketManager,
 };
+use crate::{
+    blockchain_game_processor::BlockchainGameProcessor,
+    finalization::FinalizationWaiter,
+};
 use axum::{
     extract::{Path, Query, State},
     Extension, Json,
@@ -16,6 +20,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 
 /// Shared application state
 pub struct AppState {
@@ -25,6 +30,11 @@ pub struct AppState {
     pub version: String,
     pub websocket_manager: Arc<WebSocketManager>,
     pub metrics: Arc<super::monitoring::MetricsRegistry>,
+    
+    // Game-related components for casino functionality
+    pub game_processor: Option<Arc<BlockchainGameProcessor>>,
+    pub tx_sender: Option<mpsc::UnboundedSender<crate::common::types::Transaction>>,
+    pub finalization_waiter: Option<Arc<FinalizationWaiter>>,
 }
 
 /// Health check handler - minimal response time
@@ -52,20 +62,25 @@ pub async fn status_handler(
             request_id.0.clone(),
             format!("Failed to get hash: {}", e)
         ))?;
-    
-    // Get latest block for timestamp
-    let latest_block = state.storage.get_block_by_height(latest_height)
-        .map_err(|e| ApiError::internal_error(
-            request_id.0.clone(),
-            format!("Failed to get block: {}", e)
-        ))?
-        .ok_or_else(|| ApiError::internal_error(
-            request_id.0.clone(),
-            "Latest block not found".to_string()
-        ))?;
-    
-    let latest_time = DateTime::from_timestamp_millis(latest_block.timestamp as i64)
-        .unwrap_or_else(|| Utc::now());
+
+    // Height 0 means: no finalized blocks have been committed yet.
+    // Treat this as genesis and return a valid status payload.
+    let latest_time = if latest_height == 0 {
+        Utc::now()
+    } else {
+        let latest_block = state.storage.get_block_by_height(latest_height)
+            .map_err(|e| ApiError::internal_error(
+                request_id.0.clone(),
+                format!("Failed to get block: {}", e)
+            ))?
+            .ok_or_else(|| ApiError::internal_error(
+                request_id.0.clone(),
+                "Latest block not found".to_string()
+            ))?;
+
+        DateTime::from_timestamp_millis(latest_block.timestamp as i64)
+            .unwrap_or_else(|| Utc::now())
+    };
     
     Ok(Json(StatusResponse {
         node_info: NodeInfo {

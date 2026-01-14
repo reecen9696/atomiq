@@ -32,6 +32,10 @@ path = "src/inspect_db_main.rs"
 name = "atomiq-api"
 path = "src/api_main.rs"
 
+[[bin]]
+name = "api-finalized"
+path = "src/bin/api_finalized.rs"
+
 [dependencies]
 hotstuff_rs = "0.4.0"
 tokio = { version = "1.0", features = ["full"] }
@@ -50,6 +54,7 @@ rand_core = { version = "0.6.4", features = ["getrandom"] }
 clap = { version = "4.0", features = ["derive"] }
 toml = "0.8"
 hex = "0.4"
+thiserror = "1.0"  # Error handling
 axum = { version = "0.7", features = ["ws"] }  # WebSocket support
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace", "timeout"] }

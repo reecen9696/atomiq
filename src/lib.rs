@@ -44,6 +44,7 @@ pub mod config;
 pub mod benchmark;
 pub mod transaction_pool;
 pub mod direct_commit;
+pub mod finalization;
 pub mod state_manager;
 pub mod services;
 pub mod metrics;
@@ -53,8 +54,9 @@ pub mod blockchain_game_processor;
 // Re-export commonly used types for convenience
 pub use config::{BlockchainConfig, ConsensusMode};
 pub use errors::{AtomiqError, AtomiqResult};
-pub use factory::{BlockchainFactory, BlockchainHandle};
+pub use factory::{BlockchainFactory, BlockchainHandle, DirectCommitHandle};
 pub use direct_commit::{DirectCommitEngine, DirectCommitMetrics};
+pub use finalization::{BlockCommittedEvent, FinalizationWaiter, FinalizationError};
 
 // Re-export storage interface
 pub use hotstuff_rs::block_tree::pluggables::KVGet;
@@ -289,6 +291,13 @@ impl AtomiqApp {
         self.transaction_pool.submit_transaction(transaction)
             .map_err(|e| e.into())
     }
+    
+    /// Get a transaction sender for external components (like API server)
+    pub fn transaction_sender(&self) -> TransactionSender {
+        TransactionSender {
+            pool: self.transaction_pool.clone(),
+        }
+    }
 
     /// Get current transaction pool size  
     pub fn pool_size(&self) -> usize {
@@ -475,6 +484,29 @@ impl BlockchainMetrics {
     /// Calculate state utilization metrics
     pub fn state_utilization_mb(&self) -> f64 {
         self.state_size_bytes as f64 / (1024.0 * 1024.0)
+    }
+}
+
+/// Helper for sending transactions from external components like the API server
+#[derive(Clone)]
+pub struct TransactionSender {
+    pool: crate::transaction_pool::TransactionPool,
+}
+
+impl TransactionSender {
+    pub fn send(&self, transaction: crate::common::types::Transaction) -> Result<(), String> {
+        // Convert common::types::Transaction to the Transaction type used by the pool
+        let pool_tx = crate::Transaction {
+            id: transaction.id,
+            sender: transaction.sender,
+            data: transaction.data,
+            nonce: transaction.nonce,
+            timestamp: transaction.timestamp,
+        };
+        
+        self.pool.submit_transaction(pool_tx)
+            .map(|_| ())
+            .map_err(|e| format!("Failed to submit transaction: {}", e))
     }
 }
 
