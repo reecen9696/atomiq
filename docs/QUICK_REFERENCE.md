@@ -152,13 +152,7 @@ curl -X POST http://127.0.0.1:3000/api/coinflip/play \
         "block_height": 1234,
         "block_hash": "<32-byte hex>",
         "finalization_confirmed": true,
-        "vrf_meta": {
-            "signing_context": "HotstuffCasino",
-            "signature_scheme": "sr25519",
-            "vrf_output_derivation": "sha256(vrf_proof)",
-            "input_message_encoding": "utf8",
-            "coinflip_result_rule": "heads if vrf_output[0] is even else tails"
-        }
+        
   }
 }
 ```

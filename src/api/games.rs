@@ -151,14 +151,7 @@ pub async fn play_coinflip(
                 metadata: Some(serde_json::json!({
                     "block_height": block_height,
                     "block_hash": hex::encode(block_hash),
-                    "finalization_confirmed": true,
-                    "vrf_meta": {
-                        "signing_context": "HotstuffCasino",
-                        "signature_scheme": "sr25519",
-                        "vrf_output_derivation": "sha256(vrf_proof)",
-                        "input_message_encoding": "utf8",
-                        "coinflip_result_rule": "heads if vrf_output[0] is even else tails"
-                    }
+                    "finalization_confirmed": true
                 })),
             };
             
@@ -242,14 +235,7 @@ pub async fn get_game_result(
             metadata: Some(serde_json::json!({
                 "block_height": result.block_height,
                 "block_hash": hex::encode(result.block_hash),
-                "finalization_confirmed": true,
-                "vrf_meta": {
-                    "signing_context": "HotstuffCasino",
-                    "signature_scheme": "sr25519",
-                    "vrf_output_derivation": "sha256(vrf_proof)",
-                    "input_message_encoding": "utf8",
-                    "coinflip_result_rule": "heads if vrf_output[0] is even else tails"
-                }
+                "finalization_confirmed": true
             })),
         };
         

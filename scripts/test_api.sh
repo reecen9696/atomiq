@@ -3,7 +3,25 @@
 
 set -e
 
-API_URL="${API_URL:-http://localhost:8080}"
+MANAGE_SERVER="${MANAGE_SERVER:-0}"
+KILL_EXISTING="${KILL_EXISTING:-0}"
+
+# When managing the server from this script, prefer running the already-built binary
+# directly (more reliable than `cargo run` inside test harnesses).
+if [ -z "${BIN:-}" ]; then
+    if [ "$MANAGE_SERVER" = "1" ]; then
+        BIN="./target/debug/api-finalized"
+    else
+        BIN="cargo run --bin api-finalized"
+    fi
+fi
+
+DEFAULT_API_URL="http://localhost:8080"
+if [ "$MANAGE_SERVER" = "1" ]; then
+    DEFAULT_API_URL="http://127.0.0.1:3000"
+fi
+
+API_URL="${API_URL:-$DEFAULT_API_URL}"
 PASS="\033[0;32m✓\033[0m"
 FAIL="\033[0;31m✗\033[0m"
 
@@ -22,6 +40,117 @@ require_cmd() {
 
 require_cmd curl
 require_cmd jq
+
+SERVER_PID=""
+
+extract_port() {
+    # Best-effort URL port extraction (expects explicit :PORT)
+    echo "$1" | sed -E 's#^https?://[^:/]+:([0-9]+).*#\1#'
+}
+
+wait_ready() {
+    for i in $(seq 1 120); do
+        if curl -fsS "$API_URL/status" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    return 1
+}
+
+start_server() {
+    local port
+    port=$(extract_port "$API_URL")
+
+    if [ -n "$port" ] && [ "$port" != "$API_URL" ]; then
+        if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+            if [ "$KILL_EXISTING" = "1" ]; then
+                echo "Port $port already in use; killing existing listener..."
+                lsof -nP -iTCP:"$port" -sTCP:LISTEN -t | xargs -I {} kill {} || true
+                sleep 0.5
+            else
+                echo "Port $port already has a listener. Set KILL_EXISTING=1 or run without MANAGE_SERVER=1." 1>&2
+                exit 1
+            fi
+        fi
+    fi
+
+    echo "Starting server: $BIN"
+    (cd "$(dirname "$0")/.." && \
+        if [ "$MANAGE_SERVER" = "1" ] && [ ! -x "$BIN" ]; then
+            echo "Building api-finalized binary..." 1>&2
+            cargo build --bin api-finalized >/dev/null 2>&1
+        fi && \
+        ${BIN} >/tmp/atomiq_test_api_server.log 2>&1) &
+    SERVER_PID=$!
+
+    if ! wait_ready; then
+        echo "Server did not become ready. Logs:" 1>&2
+        tail -n 200 /tmp/atomiq_test_api_server.log 1>&2 || true
+        stop_server || true
+        exit 1
+    fi
+}
+
+stop_server() {
+    if [ -n "$SERVER_PID" ]; then
+        kill "$SERVER_PID" >/dev/null 2>&1 || true
+        wait "$SERVER_PID" >/dev/null 2>&1 || true
+        SERVER_PID=""
+    fi
+}
+
+restart_stability_check() {
+    echo "=== Restart Stability (VRF public key) ==="
+    echo -n "Capturing VRF public key (run 1)... "
+    local resp1 key1 resp2 key2
+
+    resp1=$(curl -sS -X POST "$API_URL/api/coinflip/play" \
+      -H "Content-Type: application/json" \
+      -d '{"player_id":"restart-suite","choice":"heads","token":{"symbol":"SOL"},"bet_amount":0.000000001}')
+    key1=$(echo "$resp1" | jq -r '.result.vrf.public_key')
+    if [ -z "$key1" ] || [ "$key1" = "null" ]; then
+        echo -e "$FAIL (missing public key)"
+        echo "Response: $resp1" 1>&2
+        exit 1
+    fi
+    echo -e "$PASS"
+
+    stop_server
+    start_server
+
+    echo -n "Capturing VRF public key (run 2)... "
+    resp2=$(curl -sS -X POST "$API_URL/api/coinflip/play" \
+      -H "Content-Type: application/json" \
+      -d '{"player_id":"restart-suite","choice":"heads","token":{"symbol":"SOL"},"bet_amount":0.000000001}')
+    key2=$(echo "$resp2" | jq -r '.result.vrf.public_key')
+    if [ -z "$key2" ] || [ "$key2" = "null" ]; then
+        echo -e "$FAIL (missing public key)"
+        echo "Response: $resp2" 1>&2
+        exit 1
+    fi
+    echo -e "$PASS"
+
+    echo -n "Asserting VRF public key stable across restart... "
+    if [ "$key1" != "$key2" ]; then
+        echo -e "$FAIL"
+        echo "Run1 key: $key1" 1>&2
+        echo "Run2 key: $key2" 1>&2
+        exit 1
+    fi
+    echo -e "$PASS"
+    echo ""
+}
+
+cleanup() {
+    stop_server || true
+}
+
+if [ "$MANAGE_SERVER" = "1" ]; then
+    trap cleanup EXIT
+    start_server
+    restart_stability_check
+fi
 
 # Function to test an endpoint
 test_endpoint() {
@@ -152,15 +281,38 @@ fi
 echo ""
 
 echo "=== Performance Test ==="
-echo -n "Testing 100 concurrent requests... "
+PERF_REQUESTS="${PERF_REQUESTS:-100}"
+PERF_CONNECT_TIMEOUT_SECS="${PERF_CONNECT_TIMEOUT_SECS:-1}"
+PERF_MAX_TIME_SECS="${PERF_MAX_TIME_SECS:-3}"
+
+echo -n "Testing ${PERF_REQUESTS} concurrent requests... "
 start_time=$(date +%s%N)
-for i in {1..100}; do
-    curl -s "$API_URL/health" > /dev/null &
+
+pids=()
+for i in $(seq 1 "$PERF_REQUESTS"); do
+    curl -sS --fail \
+        --connect-timeout "$PERF_CONNECT_TIMEOUT_SECS" \
+        --max-time "$PERF_MAX_TIME_SECS" \
+        "$API_URL/health" >/dev/null &
+    pids+=("$!")
 done
-wait
+
+failures=0
+for pid in "${pids[@]}"; do
+    if ! wait "$pid"; then
+        failures=$((failures + 1))
+    fi
+done
+
 end_time=$(date +%s%N)
 duration=$((($end_time - $start_time) / 1000000))
-echo -e "$PASS (Completed in ${duration}ms)"
+
+if [ "$failures" -eq 0 ]; then
+    echo -e "$PASS (Completed in ${duration}ms)"
+else
+    echo -e "$FAIL (${failures}/${PERF_REQUESTS} requests failed or timed out; ${duration}ms)"
+    exit 1
+fi
 echo ""
 
 echo "=== Response Time Test ==="
@@ -177,3 +329,7 @@ echo ""
 echo "======================================"
 echo "  Test Suite Complete!"
 echo "======================================"
+
+if [ "$MANAGE_SERVER" = "1" ]; then
+    stop_server || true
+fi
