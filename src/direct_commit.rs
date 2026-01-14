@@ -226,33 +226,104 @@ impl DirectCommitEngine {
         let mut storage = self.storage.as_ref().clone();
         storage.write(batch);
         
-        // Optional: Prune old blocks if configured
-        if let Some(max_blocks) = self.config.storage.max_blocks_retained {
-            if height > max_blocks {
-                let prune_height = height - max_blocks;
-                if let Err(e) = self.prune_old_blocks(prune_height) {
-                    eprintln!("⚠️  Block pruning warning: {}", e);
-                }
+        // Optional: Size-based pruning if configured
+        if let Some(max_size_mb) = self.config.storage.max_storage_size_mb {
+            if let Err(e) = self.check_and_prune_by_size(max_size_mb, height) {
+                eprintln!("⚠️  Storage pruning warning: {}", e);
             }
         }
         
         Ok(())
     }
 
-    /// Prune blocks older than specified height (for constrained storage environments)
-    /// This helps maintain a fixed storage footprint on droplets with limited capacity
-    fn prune_old_blocks(&self, prune_up_to_height: u64) -> Result<(), String> {
+    /// Check database size and prune old blocks if exceeding limit
+    /// This is smarter than block-count pruning - adapts to actual data size
+    fn check_and_prune_by_size(&self, max_size_mb: u64, current_height: u64) -> Result<(), String> {
+        use std::fs;
+        
+        // Get actual database directory size
+        let db_path = std::path::Path::new(&self.config.storage.data_directory);
+        if !db_path.exists() {
+            return Ok(()); // Nothing to prune
+        }
+        
+        // Calculate directory size
+        let current_size_bytes = calculate_dir_size(db_path)
+            .map_err(|e| format!("Failed to calculate DB size: {}", e))?;
+        
+        let current_size_mb = current_size_bytes / (1024 * 1024);
+        let max_size_bytes = max_size_mb * 1024 * 1024;
+        
+        // Only prune if we've exceeded the limit
+        if current_size_bytes <= max_size_bytes {
+            return Ok(());
+        }
+        
+        // Calculate how much we need to free (target 90% of max to avoid constant pruning)
+        let target_size_bytes = (max_size_bytes as f64 * 0.9) as u64;
+        let bytes_to_free = current_size_bytes.saturating_sub(target_size_bytes);
+        
+        println!("🗑️  Storage limit exceeded: {:.1} MB / {} MB", 
+                 current_size_mb, max_size_mb);
+        println!("   Pruning oldest blocks to free ~{:.1} MB...", 
+                 bytes_to_free as f64 / (1024.0 * 1024.0));
+        
+        // Estimate avg block size from recent blocks
+        let avg_block_size = self.estimate_average_block_size(current_height)?;
+        let blocks_to_prune = if avg_block_size > 0 {
+            (bytes_to_free / avg_block_size).max(1)
+        } else {
+            10 // Default: prune 10 blocks if we can't estimate
+        };
+        
+        // Prune blocks from height 1 up to blocks_to_prune
+        let mut pruned_count = 0;
+        for height in 1..=blocks_to_prune.min(current_height.saturating_sub(100)) {
+            if let Err(e) = self.prune_single_block(height) {
+                eprintln!("   Warning: Failed to prune block {}: {}", height, e);
+            } else {
+                pruned_count += 1;
+            }
+        }
+        
+        println!("   ✅ Pruned {} blocks", pruned_count);
+        
+        Ok(())
+    }
+
+    /// Estimate average block size from last few blocks
+    fn estimate_average_block_size(&self, current_height: u64) -> Result<u64, String> {
+        use hotstuff_rs::block_tree::pluggables::KVGet;
+        
+        let sample_size = 10u64.min(current_height);
+        let mut total_size = 0u64;
+        let mut count = 0u64;
+        
+        for offset in 0..sample_size {
+            let height = current_height.saturating_sub(offset);
+            let key = format!("block:height:{}", height);
+            if let Some(block_data) = self.storage.get(key.as_bytes()) {
+                total_size += block_data.len() as u64;
+                count += 1;
+            }
+        }
+        
+        Ok(if count > 0 { total_size / count } else { 0 })
+    }
+
+    /// Prune a single block and its indices (for size-based pruning)
+    fn prune_single_block(&self, height: u64) -> Result<(), String> {
         use hotstuff_rs::block_tree::pluggables::{KVStore, KVGet, WriteBatch};
         use crate::storage::RocksWriteBatch;
         
         let mut batch = RocksWriteBatch::new();
         
         // Delete block data
-        let height_key = format!("block:height:{}", prune_up_to_height);
+        let height_key = format!("block:height:{}", height);
         batch.delete(height_key.as_bytes());
         
         // Get block hash for cleanup
-        let height_hash_key = format!("height_to_hash:{}", prune_up_to_height);
+        let height_hash_key = format!("height_to_hash:{}", height);
         if let Some(hash_bytes) = self.storage.get(height_hash_key.as_bytes()) {
             if hash_bytes.len() == 32 {
                 // Delete hash index
@@ -265,14 +336,38 @@ impl DirectCommitEngine {
         batch.delete(height_hash_key.as_bytes());
         
         // Note: Transaction indices (tx_idx:ID) are kept for historical queries
-        // They're tiny compared to full blocks (~32 bytes vs ~KB-MB per block)
+        // They're tiny compared to full blocks (~20 bytes vs KB-MB per block)
         
         let mut storage = self.storage.as_ref().clone();
         storage.write(batch);
         
         Ok(())
     }
+}
 
+/// Helper function to calculate directory size recursively
+fn calculate_dir_size(path: &std::path::Path) -> std::io::Result<u64> {
+    let mut total = 0u64;
+    
+    if path.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
+            let path = entry.path();
+            
+            if path.is_dir() {
+                total += calculate_dir_size(&path)?;
+            } else {
+                total += entry.metadata()?.len();
+            }
+        }
+    } else {
+        total = std::fs::metadata(path)?.len();
+    }
+    
+    Ok(total)
+}
+
+impl DirectCommitEngine {
     /// Print performance statistics
     async fn print_stats(&self, elapsed: Duration) {
         let app = self.app.read().await;
