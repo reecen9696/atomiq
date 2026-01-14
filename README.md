@@ -44,11 +44,13 @@ atomiq/
 ## 🚀 Quick Start
 
 ### Prerequisites
-- Rust 1.75+ 
+
+- Rust 1.75+
 - RocksDB
 - OpenSSL (for API TLS)
 
 ### Build
+
 ```bash
 # Build all binaries
 cargo build --release
@@ -59,6 +61,7 @@ cargo build --release --bin atomiq-api
 ```
 
 ### Run
+
 ```bash
 # Start blockchain with API
 cargo run --release --bin atomiq-unified
@@ -74,6 +77,7 @@ cargo run --release --bin atomiq-unified -- benchmark-performance \
 ```
 
 ### Test
+
 ```bash
 # Run all tests
 cargo test
@@ -115,6 +119,7 @@ docker-compose --profile production up -d
 ## 🏗️ Architecture
 
 ### Core Components
+
 - **Blockchain Engine**: BFT consensus with HotStuff protocol
 - **Transaction Pool**: Configurable ordering and capacity
 - **Storage Layer**: RocksDB with optimizations
@@ -122,6 +127,7 @@ docker-compose --profile production up -d
 - **Monitoring**: Prometheus metrics + real-time stats
 
 ### Stage 2 Features
+
 - ✅ Lock-free storage operations
 - ✅ LRU caching (blocks + transactions)
 - ✅ WebSocket real-time updates
@@ -132,6 +138,7 @@ docker-compose --profile production up -d
 ## 🔧 Configuration
 
 Edit `atomiq.toml`:
+
 ```toml
 [blockchain]
 chain_id = 1

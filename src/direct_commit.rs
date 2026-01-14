@@ -8,6 +8,7 @@ use crate::{
     config::AtomiqConfig,
     storage::OptimizedStorage,
     AtomiqApp, BlockchainMetrics,
+    games::{PendingGamesPool, VRFGameEngine, GameProcessor, GameResult},
 };
 use std::{
     sync::{
@@ -28,6 +29,10 @@ pub struct DirectCommitEngine {
     blocks_committed: Arc<AtomicU64>,
     last_block_height: Arc<AtomicU64>,
     last_block_hash: Arc<RwLock<[u8; 32]>>,
+    // Game support
+    pub games_pool: Arc<PendingGamesPool>,
+    pub game_processor: Arc<GameProcessor>,
+    pending_game_results: Arc<RwLock<Vec<GameResult>>>,
 }
 
 impl DirectCommitEngine {
@@ -37,6 +42,11 @@ impl DirectCommitEngine {
         storage: Arc<OptimizedStorage>,
         config: AtomiqConfig,
     ) -> Self {
+        // Initialize VRF engine for games
+        let vrf_engine = Arc::new(VRFGameEngine::new_random());
+        let game_processor = Arc::new(GameProcessor::new(vrf_engine));
+        let games_pool = Arc::new(PendingGamesPool::new());
+        
         Self {
             app,
             storage,
@@ -45,6 +55,9 @@ impl DirectCommitEngine {
             blocks_committed: Arc::new(AtomicU64::new(0)),
             last_block_height: Arc::new(AtomicU64::new(0)),
             last_block_hash: Arc::new(RwLock::new([0u8; 32])),
+            games_pool,
+            game_processor,
+            pending_game_results: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -100,15 +113,19 @@ impl DirectCommitEngine {
             ));
         }
 
-        // Only commit blocks that have transactions
-        // This prevents height gaps when there are no pending transactions
-        if transactions.is_empty() {
+        // Check for pending game results to include in the block
+        let mut pending_games = self.pending_game_results.write().await;
+        let has_games = !pending_games.is_empty();
+        
+        // Only commit blocks that have transactions or game results
+        // This prevents height gaps when there are no pending items
+        if transactions.is_empty() && !has_games {
             return Ok(());
         }
 
         // Get current height
         let height = self.last_block_height.load(Ordering::SeqCst);
-        let next_height = height + 1; // Only increment when we have transactions
+        let next_height = height + 1; // Only increment when we have content
         
         // Execute transactions and get deterministic state updates
         let (_execution_results, state_updates) = app.execute_transactions(&transactions);
@@ -139,8 +156,16 @@ impl DirectCommitEngine {
         let block_data = bincode::serialize(&block)
             .map_err(|e| format!("Failed to serialize block: {}", e))?;
         
-        // Commit to storage (includes transaction indexing)
+        // Commit to storage (includes transaction indexing and game results)
         self.commit_block_to_storage(next_height, &block_data, &block.block_hash)?;
+        
+        // Process and complete pending games (send results to waiting clients)
+        let game_results = std::mem::take(&mut *pending_games);
+        for game_result in game_results {
+            let game_id = game_result.game_id.clone();
+            self.games_pool.complete_game(&game_id, game_result);
+        }
+        drop(pending_games);
         
         // Update state tracking
         self.last_block_height.store(next_height, Ordering::SeqCst);
@@ -407,7 +432,14 @@ impl DirectCommitEngine {
             blocks_committed: self.blocks_committed.load(Ordering::SeqCst),
             current_height: self.last_block_height.load(Ordering::SeqCst),
             is_running: self.running.load(Ordering::SeqCst),
+            pending_games: self.games_pool.pending_count(),
         }
+    }
+    
+    /// Submit a game result for inclusion in next block
+    pub async fn submit_game_result(&self, game_result: GameResult) {
+        let mut pending = self.pending_game_results.write().await;
+        pending.push(game_result);
     }
 }
 
@@ -418,6 +450,7 @@ pub struct DirectCommitMetrics {
     pub blocks_committed: u64,
     pub current_height: u64,
     pub is_running: bool,
+    pub pending_games: usize,
 }
 
 impl DirectCommitMetrics {

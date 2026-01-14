@@ -102,6 +102,7 @@ pub enum TransactionError {
     ExecutionFailed(String),
     PoolFull,
     DuplicateTransaction(u64),
+    InvalidFormat(String),
 }
 
 // Display implementations
@@ -209,6 +210,7 @@ impl fmt::Display for TransactionError {
             TransactionError::ExecutionFailed(msg) => write!(f, "Execution failed: {}", msg),
             TransactionError::PoolFull => write!(f, "Transaction pool full"),
             TransactionError::DuplicateTransaction(id) => write!(f, "Duplicate transaction: {}", id),
+            TransactionError::InvalidFormat(msg) => write!(f, "Invalid format: {}", msg),
         }
     }
 }

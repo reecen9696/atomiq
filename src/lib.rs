@@ -47,6 +47,8 @@ pub mod direct_commit;
 pub mod state_manager;
 pub mod services;
 pub mod metrics;
+pub mod games;
+pub mod blockchain_game_processor;
 
 // Re-export commonly used types for convenience
 pub use config::{BlockchainConfig, ConsensusMode};

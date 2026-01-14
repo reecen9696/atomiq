@@ -7,6 +7,15 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Transaction type enumeration
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TransactionType {
+    /// Standard data transaction
+    Standard,
+    /// Casino game bet transaction
+    GameBet,
+}
+
 /// Canonical transaction type used throughout the system
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Transaction {
@@ -20,6 +29,8 @@ pub struct Transaction {
     pub timestamp: u64,
     /// Nonce for replay protection
     pub nonce: u64,
+    /// Transaction type (Standard or GameBet)
+    pub tx_type: TransactionType,
 }
 
 impl Transaction {
@@ -31,6 +42,32 @@ impl Transaction {
             data,
             timestamp: current_timestamp_ms(),
             nonce,
+            tx_type: TransactionType::Standard,
+        }
+    }
+
+    /// Create a new game bet transaction
+    pub fn new_game_bet(id: u64, sender: [u8; 32], data: Vec<u8>, nonce: u64) -> Self {
+        Self {
+            id,
+            sender,
+            data,
+            timestamp: current_timestamp_ms(),
+            nonce,
+            tx_type: TransactionType::GameBet,
+        }
+    }
+
+    /// Create a new game bet transaction with fixed timestamp (for testing)
+    #[cfg(test)]
+    pub fn new_game_bet_with_timestamp(id: u64, sender: [u8; 32], data: Vec<u8>, nonce: u64, timestamp: u64) -> Self {
+        Self {
+            id,
+            sender,
+            data,
+            timestamp,
+            nonce,
+            tx_type: TransactionType::GameBet,
         }
     }
 
@@ -42,6 +79,12 @@ impl Transaction {
         hasher.update(&self.data);
         hasher.update(&self.timestamp.to_be_bytes());
         hasher.update(&self.nonce.to_be_bytes());
+        // Include tx_type in hash
+        let type_byte = match self.tx_type {
+            TransactionType::Standard => 0u8,
+            TransactionType::GameBet => 1u8,
+        };
+        hasher.update(&[type_byte]);
         hasher.finalize().into()
     }
 

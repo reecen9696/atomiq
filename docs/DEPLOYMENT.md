@@ -18,12 +18,14 @@ atomiq/
 ## What to Deploy
 
 ### Required Files
+
 - `target/release/atomiq-unified` - Main blockchain binary
 - `target/release/atomiq-api` - API server binary
 - `atomiq.toml` - Configuration file
 - `deployment/` - Full deployment directory
 
 ### Optional Files
+
 - `scripts/` - Maintenance scripts
 - `logs/` - Create on target (will be populated)
 - `DB/` - Create on target (database storage)
@@ -64,35 +66,38 @@ docker-compose down -v
 ### 2. Systemd Service (Linux)
 
 1. **Build Release Binaries**
+
    ```bash
    cargo build --release --bin atomiq-unified
    cargo build --release --bin atomiq-api
    ```
 
 2. **Copy Files to Server**
+
    ```bash
    # Create deployment directory
    ssh user@server "mkdir -p /opt/atomiq/{bin,config,data,logs}"
-   
+
    # Copy binaries
    scp target/release/atomiq-unified user@server:/opt/atomiq/bin/
    scp target/release/atomiq-api user@server:/opt/atomiq/bin/
-   
+
    # Copy configuration
    scp atomiq.toml user@server:/opt/atomiq/config/
-   
+
    # Copy deployment configs
    scp -r deployment/ user@server:/opt/atomiq/
    ```
 
 3. **Create Systemd Service**
-   
+
    Create `/etc/systemd/system/atomiq.service`:
+
    ```ini
    [Unit]
    Description=Atomiq Blockchain Node
    After=network.target
-   
+
    [Service]
    Type=simple
    User=atomiq
@@ -103,14 +108,14 @@ docker-compose down -v
    RestartSec=10
    StandardOutput=append:/opt/atomiq/logs/atomiq.log
    StandardError=append:/opt/atomiq/logs/atomiq-error.log
-   
+
    # Security
    NoNewPrivileges=true
    PrivateTmp=true
    ProtectSystem=strict
    ProtectHome=true
    ReadWritePaths=/opt/atomiq/data /opt/atomiq/logs
-   
+
    [Install]
    WantedBy=multi-user.target
    ```
@@ -255,26 +260,26 @@ server {
 server {
     listen 443 ssl http2;
     server_name blockchain.yourdomain.com;
-    
+
     ssl_certificate /etc/letsencrypt/live/blockchain.yourdomain.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/blockchain.yourdomain.com/privkey.pem;
-    
+
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
-    
+
     location / {
         proxy_pass http://blockchain;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        
+
         # WebSocket support
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
     }
-    
+
     # Rate limiting
     limit_req_zone $binary_remote_addr zone=api:10m rate=100r/s;
     limit_req zone=api burst=200 nodelay;
@@ -293,11 +298,11 @@ global:
   evaluation_interval: 15s
 
 scrape_configs:
-  - job_name: 'atomiq'
+  - job_name: "atomiq"
     static_configs:
-      - targets: ['blockchain:9090']
+      - targets: ["blockchain:9090"]
         labels:
-          instance: 'atomiq-node-1'
+          instance: "atomiq-node-1"
 ```
 
 ### Grafana Dashboard
@@ -408,6 +413,7 @@ echo "OK: All checks passed"
 ```
 
 Run every 5 minutes:
+
 ```bash
 */5 * * * * /opt/atomiq/scripts/healthcheck.sh
 ```
@@ -473,27 +479,32 @@ sudo systemctl restart atomiq
 ## Upgrade Procedure
 
 1. **Backup Current State**
+
    ```bash
    ./scripts/backup.sh
    ```
 
 2. **Stop Service**
+
    ```bash
    sudo systemctl stop atomiq
    ```
 
 3. **Replace Binaries**
+
    ```bash
    cp target/release/atomiq-unified /opt/atomiq/bin/
    cp target/release/atomiq-api /opt/atomiq/bin/
    ```
 
 4. **Update Configuration** (if needed)
+
    ```bash
    cp atomiq.toml /opt/atomiq/config/
    ```
 
 5. **Start Service**
+
    ```bash
    sudo systemctl start atomiq
    ```
@@ -539,6 +550,7 @@ Before going live:
 ## Support
 
 For deployment issues:
+
 - Check logs: `/opt/atomiq/logs/`
 - Review configuration: `/opt/atomiq/config/atomiq.toml`
 - Test health: `curl http://localhost:8080/health`

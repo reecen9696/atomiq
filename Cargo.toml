@@ -71,6 +71,8 @@ tokio-stream = "0.1"
 # WebSocket and real-time features
 tokio-tungstenite = "0.20"  # WebSocket implementation
 prometheus = "0.13"  # Metrics collection
+# VRF for provably fair games
+schnorrkel = "0.11"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

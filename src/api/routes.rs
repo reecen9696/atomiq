@@ -6,6 +6,7 @@ use super::{
     handlers::*, 
     websocket::{websocket_handler, transaction_websocket_handler},
     monitoring::metrics_handler,
+    games::{play_coinflip, get_game_result, verify_vrf, verify_game_by_id, list_supported_tokens},
 };
 use axum::{
     routing::{get, post},
@@ -38,4 +39,16 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         
         // Attach shared state
         .with_state(state)
+}
+
+/// Build the game API router with all casino game endpoints
+pub fn create_game_router(game_state: Arc<crate::api::games::GameApiState>) -> Router {
+    Router::new()
+        // Casino game endpoints
+        .route("/api/coinflip/play", post(play_coinflip))
+        .route("/api/game/:id", get(get_game_result))
+        .route("/api/verify/vrf", post(verify_vrf))
+        .route("/api/verify/game/:id", get(verify_game_by_id))
+        .route("/api/tokens", get(list_supported_tokens))
+        .with_state((*game_state).clone())
 }

@@ -13,6 +13,7 @@ pub mod server;
 pub mod storage;
 pub mod websocket;
 pub mod cache;
+pub mod games;
 
 // High-performance modules (Stage 2 features)
 pub mod concurrent_handler;
