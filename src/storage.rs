@@ -63,6 +63,16 @@ impl OptimizedStorage {
         }
         self.db.write(batch)
     }
+
+    /// Write a single key/value pair.
+    pub fn put(&self, key: &[u8], value: &[u8]) -> Result<(), rocksdb::Error> {
+        self.db.put(key, value)
+    }
+
+    /// Delete a key.
+    pub fn delete(&self, key: &[u8]) -> Result<(), rocksdb::Error> {
+        self.db.delete(key)
+    }
 }
 
 impl KVGet for OptimizedStorage {

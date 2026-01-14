@@ -3,6 +3,7 @@ name = "atomiq"
 version = "0.1.0"
 edition = "2021"
 default-run = "atomiq"
+autoexamples = false
 
 [[bin]]
 name = "atomiq"

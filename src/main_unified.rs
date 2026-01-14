@@ -316,6 +316,7 @@ fn load_config_from_file(path: &PathBuf) -> AtomiqResult<AtomiqConfig> {
 mod tests {
     use super::*;
     use clap::CommandFactory;
+    use tempfile::tempdir;
 
     #[test]
     fn verify_cli() {
@@ -324,6 +325,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_throughput() {
+        let db_dir = tempdir().expect("create temp db dir");
+
         let config = AtomiqConfig {
             network: atomiq::config::NetworkConfig {
                 mode: NetworkMode::Mock,
@@ -331,6 +334,10 @@ mod tests {
             },
             ..Default::default()
         };
+
+        let mut config = config;
+        config.storage.data_directory = db_dir.path().to_string_lossy().into_owned();
+        config.storage.clear_on_start = true;
 
         let result = run_throughput_test(config, 100, 10).await;
         assert!(result.is_ok());

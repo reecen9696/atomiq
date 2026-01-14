@@ -19,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create a high-performance blockchain with DirectCommit
     info!("📦 Creating DirectCommit blockchain...");
-    let (app, handle) = BlockchainFactory::create_high_performance().await?;
+    let (app, handle) = BlockchainFactory::create_high_performance_persistent().await?;
     
     // Get the DirectCommit engine from the handle
     let engine = if let Some(direct_commit_handle) = handle.as_any().downcast_ref::<DirectCommitHandle>() {

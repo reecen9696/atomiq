@@ -50,6 +50,7 @@ pub mod services;
 pub mod metrics;
 pub mod games;
 pub mod blockchain_game_processor;
+pub mod game_store;
 
 // Re-export commonly used types for convenience
 pub use config::{BlockchainConfig, ConsensusMode};

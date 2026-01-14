@@ -3,7 +3,7 @@
 
 set -e
 
-API_URL="http://localhost:8080"
+API_URL="${API_URL:-http://localhost:8080}"
 PLAYER_ID="test-player-$(date +%s)"
 
 echo "🎰 Casino Game API Test Script"

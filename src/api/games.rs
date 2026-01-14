@@ -275,88 +275,72 @@ pub async fn verify_vrf(
     // Decode VRF proof and output from hex
     let vrf_proof = hex::decode(&request.vrf_proof)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid VRF proof hex: {}", e)))?;
-    
+
     let vrf_output = hex::decode(&request.vrf_output)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid VRF output hex: {}", e)))?;
-    
+
     // Validate VRF proof and output lengths
     if vrf_proof.len() != 64 {
         return Ok(Json(VerifyVRFResponse {
             is_valid: false,
-            error: Some(format!("Invalid VRF proof length: expected 64 bytes, got {}", vrf_proof.len())),
+            error: Some(format!(
+                "Invalid VRF proof length: expected 64 bytes, got {}",
+                vrf_proof.len()
+            )),
             computed_result: None,
             explanation: Some("VRF proof must be exactly 64 bytes (512 bits) for Schnorrkel".to_string()),
         }));
     }
-    
+
     if vrf_output.len() != 32 {
         return Ok(Json(VerifyVRFResponse {
             is_valid: false,
-            error: Some(format!("Invalid VRF output length: expected 32 bytes, got {}", vrf_output.len())),
+            error: Some(format!(
+                "Invalid VRF output length: expected 32 bytes, got {}",
+                vrf_output.len()
+            )),
             computed_result: None,
             explanation: Some("VRF output must be exactly 32 bytes (256 bits)".to_string()),
         }));
     }
-    
-    // Create a BlockchainGameResult for verification
-    let dummy_result = BlockchainGameResult {
-        transaction_id: 0,
-        player_address: String::new(),
-        game_type: request.game_type,
-        bet_amount: 0,
-        token: crate::games::types::Token::sol(),
-        player_choice: crate::games::types::CoinChoice::Heads,
-        outcome: crate::games::types::GameOutcome::Win,
-        coin_result: crate::games::types::CoinFlipResult::Heads,
-        vrf_proof: vrf_proof.clone(),
-        vrf_output: vrf_output.clone(),
-        vrf_input_message: request.input_message.clone(),
-        payout: 0,
-        timestamp: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs(),
-        block_height: 0,
-        block_hash: [0u8; 32],
+
+    // Verify cryptographically from request data (no in-memory state).
+    let vrf_bundle = crate::games::types::VRFBundle {
+        vrf_output: request.vrf_output.clone(),
+        vrf_proof: request.vrf_proof.clone(),
+        public_key: request.public_key.clone(),
+        input_message: request.input_message.clone(),
     };
-    
-    // Perform detailed VRF verification
-    match state.game_processor.verify_game_result(&dummy_result) {
+
+    match crate::games::vrf_engine::VRFGameEngine::verify_vrf_proof(&vrf_bundle, &request.input_message) {
         Ok(is_valid) => {
-            if is_valid {
-                // Generate essential verification data
-                let verification_details = serde_json::json!({
+            let computed = if request.game_type == crate::games::types::GameType::CoinFlip {
+                let result_choice = crate::games::vrf_engine::VRFGameEngine::compute_coinflip(&vrf_output);
+                Some(serde_json::json!({
+                    "coinflip_result": format!("{:?}", result_choice),
                     "proof_length": vrf_proof.len(),
                     "output_length": vrf_output.len(),
-                    "timestamp": std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs()
-                });
-                
-                Ok(Json(VerifyVRFResponse {
-                    is_valid: true,
-                    error: None,
-                    computed_result: Some(verification_details),
-                    explanation: None,
                 }))
             } else {
-                Ok(Json(VerifyVRFResponse {
-                    is_valid: false,
-                    error: Some("Verification failed".to_string()),
-                    computed_result: None,
-                    explanation: None,
+                Some(serde_json::json!({
+                    "proof_length": vrf_proof.len(),
+                    "output_length": vrf_output.len(),
                 }))
-            }
-        }
-        Err(e) => {
+            };
+
             Ok(Json(VerifyVRFResponse {
-                is_valid: false,
-                error: Some(format!("{}", e)),
-                computed_result: None,
+                is_valid,
+                error: if is_valid { None } else { Some("VRF verification failed".to_string()) },
+                computed_result: computed,
                 explanation: None,
             }))
         }
+        Err(e) => Ok(Json(VerifyVRFResponse {
+            is_valid: false,
+            error: Some(e),
+            computed_result: None,
+            explanation: None,
+        })),
     }
 }
 
@@ -371,45 +355,41 @@ pub async fn verify_game_by_id(
         .and_then(|s| s.parse::<u64>().ok())
         .ok_or_else(|| (StatusCode::BAD_REQUEST, "Invalid game ID format".to_string()))?;
     
-    // Query game result from blockchain
-    let result = state.game_processor.get_game_result(tx_id)
+    // Query game result from DB-backed game processor
+    let result = state
+        .game_processor
+        .get_game_result(tx_id)
         .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Game {} not found", game_id)))?;
-    
-    // Verify the VRF proof
+
     match state.game_processor.verify_game_result(&result) {
-        Ok(is_valid) => {
-            if is_valid {
-                Ok(Json(VerifyVRFResponse {
-                    is_valid: true,
-                    error: None,
-                    computed_result: Some(serde_json::json!({
-                        "game_id": game_id,
-                        "outcome": format!("{:?}", result.outcome),
-                        "payout": result.payout,
-                        "block_height": result.block_height,
-                    })),
-                    explanation: Some(format!(
-                        "Game result verified on blockchain at block height {}. VRF proof is valid.",
-                        result.block_height
-                    )),
-                }))
-            } else {
-                Ok(Json(VerifyVRFResponse {
-                    is_valid: false,
-                    error: Some("VRF proof verification failed".to_string()),
-                    computed_result: None,
-                    explanation: None,
-                }))
-            }
-        }
-        Err(e) => {
-            Ok(Json(VerifyVRFResponse {
-                is_valid: false,
-                error: Some(format!("Verification error: {}", e)),
-                computed_result: None,
-                explanation: None,
-            }))
-        }
+        Ok(true) => Ok(Json(VerifyVRFResponse {
+            is_valid: true,
+            error: None,
+            computed_result: Some(serde_json::json!({
+                "game_id": game_id,
+                "outcome": format!("{:?}", result.outcome),
+                "payout": result.payout,
+                "block_height": result.block_height,
+                "block_hash": hex::encode(result.block_hash),
+                "vrf_input_message": result.vrf_input_message,
+            })),
+            explanation: Some(format!(
+                "Game result verified for block height {} (VRF + game logic OK).",
+                result.block_height
+            )),
+        })),
+        Ok(false) => Ok(Json(VerifyVRFResponse {
+            is_valid: false,
+            error: Some("Verification failed".to_string()),
+            computed_result: None,
+            explanation: None,
+        })),
+        Err(e) => Ok(Json(VerifyVRFResponse {
+            is_valid: false,
+            error: Some(format!("Verification error: {}", e)),
+            computed_result: None,
+            explanation: None,
+        })),
     }
 }
 

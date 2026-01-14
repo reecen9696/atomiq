@@ -4,6 +4,10 @@
 
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use crate::{
+    blockchain_game_processor::GameBetData,
+    games::types::{CoinChoice, CoinFlipResult, GameOutcome, GameType, Token, VRFBundle},
+};
 
 /// Health check response
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +80,35 @@ pub struct TransactionResponse {
     #[serde(rename = "type")]
     pub tx_type: String,
     pub data: TransactionData,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fairness: Option<FairnessRecord>,
+}
+
+/// Game/fairness record for provably-fair verification (optional per-tx).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FairnessRecord {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub game_bet: Option<GameBetData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub game_result: Option<PersistedGameResult>,
+}
+
+/// Persisted game result returned in API-friendly encodings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedGameResult {
+    pub transaction_id: u64,
+    pub player_address: String,
+    pub game_type: GameType,
+    pub bet_amount: u64,
+    pub token: Token,
+    pub player_choice: CoinChoice,
+    pub coin_result: CoinFlipResult,
+    pub outcome: GameOutcome,
+    pub vrf: VRFBundle,
+    pub payout: u64,
+    pub timestamp: u64,
+    pub block_height: u64,
+    pub block_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -10,8 +10,9 @@ use super::{
     websocket::WebSocketManager,
 };
 use crate::{
-    blockchain_game_processor::BlockchainGameProcessor,
+    blockchain_game_processor::{load_vrf_public_key, BlockchainGameProcessor, GameBetData},
     finalization::FinalizationWaiter,
+    game_store,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -249,6 +250,61 @@ pub async fn transaction_handler(
                 request_id.0.clone(),
                 "Block not found for transaction".to_string()
             ))?;
+
+        // Best-effort decode of game bet payload.
+        let decoded_game_bet: Option<GameBetData> = serde_json::from_slice(&tx.data).ok();
+
+        // Best-effort load of persisted game result (DB is source of truth).
+        let raw_storage = state.storage.get_raw_storage();
+        let persisted_game_result = game_store::load_game_result(raw_storage.as_ref(), tx_id_u64)
+            .unwrap_or(None);
+
+        // Prefer the in-memory processor's public key; fall back to DB seed.
+        let public_key_hex = if let Some(processor) = &state.game_processor {
+            hex::encode(processor.get_public_key())
+        } else {
+            load_vrf_public_key(raw_storage.as_ref())
+                .ok()
+                .flatten()
+                .map(hex::encode)
+                .unwrap_or_default()
+        };
+
+        let fairness = if decoded_game_bet.is_some() || persisted_game_result.is_some() {
+            let game_result = persisted_game_result.map(|r| PersistedGameResult {
+                transaction_id: r.transaction_id,
+                player_address: r.player_address,
+                game_type: r.game_type,
+                bet_amount: r.bet_amount,
+                token: r.token,
+                player_choice: r.player_choice,
+                coin_result: r.coin_result,
+                outcome: r.outcome,
+                vrf: crate::games::types::VRFBundle {
+                    vrf_output: hex::encode(r.vrf_output),
+                    vrf_proof: hex::encode(r.vrf_proof),
+                    public_key: public_key_hex.clone(),
+                    input_message: r.vrf_input_message,
+                },
+                payout: r.payout,
+                timestamp: r.timestamp,
+                block_height: r.block_height,
+                block_hash: hex::encode(r.block_hash),
+            });
+
+            Some(FairnessRecord {
+                game_bet: decoded_game_bet,
+                game_result,
+            })
+        } else {
+            None
+        };
+
+        let tx_type = if fairness.is_some() {
+            "GAME_BET".to_string()
+        } else {
+            "GENERIC".to_string()
+        };
         
         Ok(Json(TransactionResponse {
             tx_id: tx_id.clone(),
@@ -257,13 +313,14 @@ pub async fn transaction_handler(
                 block_hash: hex::encode(block.block_hash),
                 index: tx_index,
             },
-            tx_type: "GENERIC".to_string(),
+            tx_type,
             data: TransactionData {
                 sender: hex::encode(tx.sender),
                 data: hex::encode(&tx.data),
                 timestamp: tx.timestamp,
                 nonce: tx.nonce,
             },
+            fairness,
         }))
     } else {
         Err(ApiError::bad_request(

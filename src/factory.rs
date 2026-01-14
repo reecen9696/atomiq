@@ -398,6 +398,17 @@ impl BlockchainFactory {
         Self::create_blockchain(AtomiqConfig::high_performance()).await
     }
 
+    /// Create blockchain optimized for high performance, preserving data on disk.
+    ///
+    /// This is the right choice for production-like runs where the RocksDB contents
+    /// (including the persisted VRF seed/public key and game results) must survive restarts.
+    pub async fn create_high_performance_persistent(
+    ) -> AtomiqResult<(Arc<AtomiqApp>, Box<dyn BlockchainHandle>)> {
+        let mut config = AtomiqConfig::high_performance();
+        config.storage.clear_on_start = false;
+        Self::create_blockchain(config).await
+    }
+
     /// Create blockchain optimized for consensus testing
     pub async fn create_consensus_testing() -> AtomiqResult<(Arc<AtomiqApp>, Box<dyn BlockchainHandle>)> {
         Self::create_blockchain(AtomiqConfig::consensus_testing()).await

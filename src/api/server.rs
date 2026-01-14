@@ -21,7 +21,7 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{signal, sync::mpsc};
 use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
 use tracing::{info, warn};
-use schnorrkel::Keypair;
+
 
 /// API server configuration
 #[derive(Debug, Clone)]
@@ -157,9 +157,12 @@ impl ApiServer {
         let (game_processor, tx_sender) = if self.config.enable_games {
             info!("🎮 Initializing casino game components...");
             
-            // Generate a keypair for VRF (in production, load from secure storage)
-            let keypair = Keypair::generate();
-            let processor = Arc::new(BlockchainGameProcessor::new(keypair));
+            // Load-or-create a persistent VRF keypair seed from RocksDB.
+            // This keeps `vrf.public_key` stable across restarts.
+            let processor = Arc::new(
+                BlockchainGameProcessor::new_with_persistent_key(self.storage.clone())
+                    .expect("Failed to initialize persistent VRF key"),
+            );
             
             // Use real blockchain connection if available, otherwise create dummy channel
             let sender = if let Some(blockchain_sender) = &self.blockchain_tx_sender {

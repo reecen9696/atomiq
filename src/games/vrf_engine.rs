@@ -75,9 +75,10 @@ impl VRFGameEngine {
 
     /// Compute coin flip result from VRF output
     pub fn compute_coinflip(vrf_output: &[u8]) -> CoinChoice {
-        // Take the last byte and check if it's even or odd
-        let last_byte = vrf_output.last().copied().unwrap_or(0);
-        if last_byte % 2 == 0 {
+        // Take the first byte and check if it's even or odd
+        // (kept consistent with the API/game verification rule)
+        let first_byte = vrf_output.first().copied().unwrap_or(0);
+        if first_byte % 2 == 0 {
             CoinChoice::Heads
         } else {
             CoinChoice::Tails
@@ -176,8 +177,8 @@ mod tests {
 
     #[test]
     fn test_coinflip_deterministic() {
-        let output1 = vec![0, 0, 0, 0]; // Even last byte
-        let output2 = vec![1, 1, 1, 1]; // Odd last byte
+        let output1 = vec![0, 1, 1, 1]; // Even first byte
+        let output2 = vec![1, 0, 0, 0]; // Odd first byte
 
         assert_eq!(VRFGameEngine::compute_coinflip(&output1), CoinChoice::Heads);
         assert_eq!(VRFGameEngine::compute_coinflip(&output2), CoinChoice::Tails);

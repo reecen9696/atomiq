@@ -7,7 +7,6 @@
 use atomiq::{
     api::server::{ApiServer, ApiConfig},
     factory::BlockchainFactory,
-    storage::OptimizedStorage,
     finalization::FinalizationWaiter,
     DirectCommitHandle,
 };
@@ -34,8 +33,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("Failed to get DirectCommit engine - wrong blockchain mode".into());
     };
 
-    // Create storage for API (using same path as blockchain)
-    let storage = Arc::new(OptimizedStorage::new("/tmp/atomiq_finalized")?);
+    // Use the same storage as the blockchain engine so API queries reflect chain state.
+    let storage = engine.storage();
 
     // Create FinalizationWaiter from the DirectCommit engine's event publisher
     info!("🔔 Setting up finalization notifications...");
@@ -62,7 +61,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create API server with finalization support
     info!("🌐 Starting API server with finalization...");
-    let server = ApiServer::with_finalization(api_config, storage, finalization_waiter);
+    let blockchain_tx_sender = app.transaction_sender();
+    let server = ApiServer::with_finalization(
+        api_config,
+        storage,
+        finalization_waiter,
+        blockchain_tx_sender,
+    );
     
     info!("✅ System ready!");
     info!("📡 API: http://127.0.0.1:3000");

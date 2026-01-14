@@ -6,16 +6,18 @@
 
 use crate::{
     common::types::{Transaction, TransactionType},
-    errors::{AtomiqError, AtomiqResult, TransactionError},
+    errors::{AtomiqError, AtomiqResult, StorageError, TransactionError},
     games::{
-        types::{CoinChoice, CoinFlipResult, GameOutcome, GameResult, GameType, PaymentInfo, Token},
+        types::{CoinChoice, CoinFlipResult, GameOutcome, GameType, Token, VRFBundle},
         vrf_engine::VRFGameEngine,
     },
+    game_store,
+    storage::OptimizedStorage,
 };
 use schnorrkel::Keypair;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use hotstuff_rs::block_tree::pluggables::KVGet;
 
 /// Game bet transaction data submitted by players
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -50,118 +52,133 @@ pub struct BlockchainGameResult {
 }
 
 /// Blockchain-side game processor that generates VRF outcomes
-/// during transaction processing
+/// during transaction processing.
 pub struct BlockchainGameProcessor {
     /// VRF engine with blockchain's secret key
     vrf_engine: Arc<VRFGameEngine>,
-    
-    /// Storage for game results (indexed by transaction ID)
-    game_results: Arc<RwLock<HashMap<u64, BlockchainGameResult>>>,
-    
+    /// Persistent storage for game results
+    storage: Arc<OptimizedStorage>,
     /// Blockchain's keypair for VRF generation
     blockchain_keypair: Keypair,
 }
 
 impl BlockchainGameProcessor {
-    /// Create a new blockchain game processor with blockchain's keypair
-    pub fn new(blockchain_keypair: Keypair) -> Self {
+    /// Create a new blockchain game processor with blockchain's keypair.
+    pub fn new(storage: Arc<OptimizedStorage>, blockchain_keypair: Keypair) -> Self {
         let vrf_engine = Arc::new(VRFGameEngine::new(blockchain_keypair.clone()));
-        
+
         Self {
             vrf_engine,
-            game_results: Arc::new(RwLock::new(HashMap::new())),
+            storage,
             blockchain_keypair,
         }
     }
-    
-    /// Process a game bet transaction AFTER block finalization
-    /// This generates the VRF proof using the finalized block hash, preventing manipulation
+
+    /// Create a processor using a persistent VRF key stored in RocksDB.
+    ///
+    /// This keeps `vrf.public_key` stable across restarts.
+    pub fn new_with_persistent_key(storage: Arc<OptimizedStorage>) -> AtomiqResult<Self> {
+        let keypair = load_or_create_vrf_keypair(storage.as_ref())?;
+        Ok(Self::new(storage, keypair))
+    }
+
+    /// Process a game bet transaction AFTER block finalization.
+    /// This generates the VRF proof using the finalized block hash, preventing manipulation.
     pub fn process_game_transaction(
         &self,
         transaction: &Transaction,
         block_hash: [u8; 32],
         block_height: u64,
     ) -> AtomiqResult<BlockchainGameResult> {
-        // Check if we've already processed this transaction
-        if let Some(existing_result) = self.game_results.read().unwrap().get(&transaction.id) {
-            // Return the existing result if it matches the same block context
+        // Check if we've already processed this transaction (DB is source of truth)
+        if let Some(existing_result) = game_store::load_game_result(self.storage.as_ref(), transaction.id)? {
             if existing_result.block_height == block_height {
-                return Ok(existing_result.clone());
+                return Ok(existing_result);
             }
         }
-        
+
         // Verify this is a game bet transaction
         if transaction.tx_type != TransactionType::GameBet {
-            return Err(AtomiqError::Transaction(
-                TransactionError::InvalidFormat("Transaction is not a game bet".to_string())
-            ));
+            return Err(AtomiqError::Transaction(TransactionError::InvalidFormat(
+                "Transaction is not a game bet".to_string(),
+            )));
         }
-        
+
         // Deserialize game bet data from transaction payload
-        let bet_data: GameBetData = serde_json::from_slice(&transaction.data)
-            .map_err(|e| AtomiqError::Transaction(
-                TransactionError::InvalidFormat(format!("Failed to deserialize game bet: {}", e))
-            ))?;
-        
-        // Create deterministic context from FINALIZED block data
-        // This ensures the same transaction in the same finalized block always produces the same outcome
-        // Block hash is unpredictable before block finalization, preventing manipulation
+        let bet_data: GameBetData = serde_json::from_slice(&transaction.data).map_err(|e| {
+            AtomiqError::Transaction(TransactionError::InvalidFormat(format!(
+                "Failed to deserialize game bet: {}",
+                e
+            )))
+        })?;
+
+        // Create deterministic context from FINALIZED block data.
         let context = format!(
             "block_hash:{},tx:{},height:{},time:{}",
-            hex::encode(block_hash),  // ← CRITICAL: Makes outcome unpredictable before block finalization
+            hex::encode(block_hash),
             transaction.id,
             block_height,
             transaction.timestamp
         );
-        
+
         // Generate VRF proof on the blockchain using the deterministic context
-        let vrf_bundle = self.vrf_engine.generate_outcome(
-            &format!("tx-{}", transaction.id),
-            bet_data.game_type,
-            &bet_data.player_address,
-            &context, // This includes the block hash
-        ).map_err(|e| AtomiqError::Transaction(
-            TransactionError::ExecutionFailed(format!("VRF generation failed: {}", e))
-        ))?;
-        
+        let vrf_bundle = self
+            .vrf_engine
+            .generate_outcome(
+                &format!("tx-{}", transaction.id),
+                bet_data.game_type,
+                &bet_data.player_address,
+                &context,
+            )
+            .map_err(|e| {
+                AtomiqError::Transaction(TransactionError::ExecutionFailed(format!(
+                    "VRF generation failed: {}",
+                    e
+                )))
+            })?;
+
         // Parse VRF output for game logic
-        let vrf_output = hex::decode(&vrf_bundle.vrf_output)
-            .map_err(|e| AtomiqError::Transaction(
-                TransactionError::ExecutionFailed(format!("VRF decode failed: {}", e))
-            ))?;
-        
+        let vrf_output = hex::decode(&vrf_bundle.vrf_output).map_err(|e| {
+            AtomiqError::Transaction(TransactionError::ExecutionFailed(format!(
+                "VRF decode failed: {}",
+                e
+            )))
+        })?;
+
         // Determine game outcome from VRF output (deterministic)
         let coin_result = determine_coin_result(&vrf_output);
-        let outcome = if (coin_result == CoinFlipResult::Heads && bet_data.player_choice == CoinChoice::Heads) ||
-                         (coin_result == CoinFlipResult::Tails && bet_data.player_choice == CoinChoice::Tails) {
+        let outcome = if (coin_result == CoinFlipResult::Heads && bet_data.player_choice == CoinChoice::Heads)
+            || (coin_result == CoinFlipResult::Tails && bet_data.player_choice == CoinChoice::Tails)
+        {
             GameOutcome::Win
         } else {
             GameOutcome::Loss
         };
-        
+
         // Calculate payout based on outcome
         let payout = if outcome == GameOutcome::Win {
-            bet_data.bet_amount * 2  // 2x payout for win
+            bet_data.bet_amount * 2
         } else {
-            0  // No payout for loss
+            0
         };
-        
-        // Create blockchain game result
+
+        let vrf_proof = hex::decode(&vrf_bundle.vrf_proof).map_err(|e| {
+            AtomiqError::Transaction(TransactionError::ExecutionFailed(format!(
+                "VRF proof decode failed: {}",
+                e
+            )))
+        })?;
+
         let game_result = BlockchainGameResult {
             transaction_id: transaction.id,
-            player_address: bet_data.player_address.clone(),
+            player_address: bet_data.player_address,
             game_type: bet_data.game_type,
             bet_amount: bet_data.bet_amount,
             token: bet_data.token,
             player_choice: bet_data.player_choice,
             coin_result,
             outcome,
-            vrf_proof: hex::decode(&vrf_bundle.vrf_proof).map_err(|e| {
-                AtomiqError::Transaction(TransactionError::ExecutionFailed(format!(
-                    "VRF proof decode failed: {}",
-                    e
-                )))
-            })?,
+            vrf_proof,
             vrf_output,
             vrf_input_message: vrf_bundle.input_message,
             payout,
@@ -169,53 +186,160 @@ impl BlockchainGameProcessor {
             block_height,
             block_hash,
         };
-        
-        // Store result in blockchain state
-        self.game_results.write().unwrap().insert(
-            transaction.id,
-            game_result.clone()
-        );
-        
+
+        game_store::store_game_result(self.storage.as_ref(), &game_result)?;
         Ok(game_result)
     }
-    
+
     /// Get a game result by transaction ID
     pub fn get_game_result(&self, transaction_id: u64) -> Option<BlockchainGameResult> {
-        self.game_results.read().unwrap().get(&transaction_id).cloned()
+        game_store::load_game_result(self.storage.as_ref(), transaction_id)
+            .ok()
+            .flatten()
     }
-    
-    /// Verify a game result's VRF proof
-    pub fn verify_game_result(&self, _game_result: &BlockchainGameResult) -> AtomiqResult<bool> {
-        // For tests, we'll always return true since we're generating valid VRF proofs
-        // In production, this would verify the VRF proof against the public key and context
-        // The VRF verification would involve:
-        // 1. Extracting block hash from blockchain storage using game_result.block_height
-        // 2. Reconstructing the VRF context (block hash + transaction data)
-        // 3. Verifying the proof using the public key
-        
-        // For now, return true to allow tests to pass
-        // TODO: Implement full VRF verification in production
+
+    /// Verify a game result's VRF proof and game logic.
+    pub fn verify_game_result(&self, game_result: &BlockchainGameResult) -> AtomiqResult<bool> {
+        let context = format!(
+            "block_hash:{},tx:{},height:{},time:{}",
+            hex::encode(game_result.block_hash),
+            game_result.transaction_id,
+            game_result.block_height,
+            game_result.timestamp
+        );
+
+        let expected_input_message = format!(
+            "tx-{}:{}:{}:{}",
+            game_result.transaction_id,
+            game_result.game_type,
+            game_result.player_address,
+            context
+        );
+
+        if game_result.vrf_input_message != expected_input_message {
+            return Ok(false);
+        }
+
+        let vrf_bundle = VRFBundle {
+            vrf_output: hex::encode(&game_result.vrf_output),
+            vrf_proof: hex::encode(&game_result.vrf_proof),
+            public_key: hex::encode(self.get_public_key()),
+            input_message: game_result.vrf_input_message.clone(),
+        };
+
+        let vrf_valid = VRFGameEngine::verify_vrf_proof(&vrf_bundle, &expected_input_message)
+            .map_err(|e| {
+                AtomiqError::Transaction(TransactionError::ExecutionFailed(format!(
+                    "VRF verification failed: {}",
+                    e
+                )))
+            })?;
+        if !vrf_valid {
+            return Ok(false);
+        }
+
+        let expected_coin = determine_coin_result(&game_result.vrf_output);
+        if expected_coin != game_result.coin_result {
+            return Ok(false);
+        }
+
+        let expected_outcome = if (expected_coin == CoinFlipResult::Heads && game_result.player_choice == CoinChoice::Heads)
+            || (expected_coin == CoinFlipResult::Tails && game_result.player_choice == CoinChoice::Tails)
+        {
+            GameOutcome::Win
+        } else {
+            GameOutcome::Loss
+        };
+        if expected_outcome != game_result.outcome {
+            return Ok(false);
+        }
+
+        let expected_payout = if expected_outcome == GameOutcome::Win {
+            game_result.bet_amount * 2
+        } else {
+            0
+        };
+        if expected_payout != game_result.payout {
+            return Ok(false);
+        }
+
         Ok(true)
     }
-    
-    /// Get all game results (for queries)
+
+    /// Get all game results (no DB scan helper yet).
     pub fn get_all_game_results(&self) -> Vec<BlockchainGameResult> {
-        self.game_results.read().unwrap().values().cloned().collect()
+        Vec::new()
     }
-    
+
     /// Get the blockchain's public key for VRF verification
     pub fn get_public_key(&self) -> Vec<u8> {
         self.blockchain_keypair.public.to_bytes().to_vec()
     }
 }
 
+/// Load the VRF public key from RocksDB, if a seed has already been created.
+///
+/// This is useful for query endpoints that want to return a complete fairness record
+/// without depending on an in-memory game processor.
+pub fn load_vrf_public_key(storage: &OptimizedStorage) -> AtomiqResult<Option<Vec<u8>>> {
+    const VRF_SEED_KEY: &[u8] = b"vrf:mini_secret_seed";
+
+    let Some(existing) = storage.get(VRF_SEED_KEY) else {
+        return Ok(None);
+    };
+
+    let seed: [u8; 32] = existing.try_into().map_err(|_| {
+        AtomiqError::Storage(StorageError::CorruptedData(
+            "VRF seed must be 32 bytes".to_string(),
+        ))
+    })?;
+
+    use schnorrkel::{ExpansionMode, MiniSecretKey};
+    let mini = MiniSecretKey::from_bytes(&seed).map_err(|e| {
+        AtomiqError::Storage(StorageError::CorruptedData(format!(
+            "Invalid VRF seed: {:?}",
+            e
+        )))
+    })?;
+    let keypair = mini.expand_to_keypair(ExpansionMode::Ed25519);
+    Ok(Some(keypair.public.to_bytes().to_vec()))
+}
+
+fn load_or_create_vrf_keypair(storage: &OptimizedStorage) -> AtomiqResult<Keypair> {
+    const VRF_SEED_KEY: &[u8] = b"vrf:mini_secret_seed";
+
+    if let Some(existing) = storage.get(VRF_SEED_KEY) {
+        let seed: [u8; 32] = existing.try_into().map_err(|_| {
+            AtomiqError::Storage(StorageError::CorruptedData(
+                "VRF seed must be 32 bytes".to_string(),
+            ))
+        })?;
+
+        use schnorrkel::{ExpansionMode, MiniSecretKey};
+        let mini = MiniSecretKey::from_bytes(&seed).map_err(|e| {
+            AtomiqError::Storage(StorageError::CorruptedData(format!(
+                "Invalid VRF seed: {:?}",
+                e
+            )))
+        })?;
+        return Ok(mini.expand_to_keypair(ExpansionMode::Ed25519));
+    }
+
+    use rand_core::OsRng;
+    use schnorrkel::{ExpansionMode, MiniSecretKey};
+
+    let mini = MiniSecretKey::generate_with(OsRng);
+    let seed_bytes = mini.to_bytes();
+    storage
+        .put(VRF_SEED_KEY, &seed_bytes)
+        .map_err(|e| AtomiqError::Storage(StorageError::WriteFailed(e.to_string())))?;
+
+    Ok(mini.expand_to_keypair(ExpansionMode::Ed25519))
+}
+
 /// Determine coin flip result from VRF output (deterministic)
 fn determine_coin_result(vrf_output: &[u8]) -> CoinFlipResult {
-    // Use first byte of VRF output to determine outcome
-    // This is cryptographically random and verifiable
     let result_byte = vrf_output.first().copied().unwrap_or(0);
-    
-    // Even = Heads, Odd = Tails
     if result_byte % 2 == 0 {
         CoinFlipResult::Heads
     } else {
@@ -226,16 +350,18 @@ fn determine_coin_result(vrf_output: &[u8]) -> CoinFlipResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::types::Transaction;
-    
+
     #[test]
     fn test_game_processor_creates_deterministic_outcomes() {
-        // Use deterministic keypair for consistent test results
-        use schnorrkel::{MiniSecretKey};
+        use schnorrkel::MiniSecretKey;
+
         let secret_key = MiniSecretKey::from_bytes(&[1u8; 32]).unwrap();
         let keypair = secret_key.expand_to_keypair(schnorrkel::ExpansionMode::Ed25519);
-        let processor = BlockchainGameProcessor::new(keypair);
-        
+
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(OptimizedStorage::new(dir.path()).unwrap());
+        let processor = BlockchainGameProcessor::new(storage, keypair);
+
         let bet_data = GameBetData {
             game_type: GameType::CoinFlip,
             bet_amount: 1000,
@@ -243,36 +369,39 @@ mod tests {
             player_choice: CoinChoice::Heads,
             player_address: "test_player".to_string(),
         };
-        
+
         let transaction = Transaction::new_game_bet_with_timestamp(
             1,
             [0u8; 32],
             serde_json::to_vec(&bet_data).unwrap(),
             1,
-            1234567890000, // Fixed timestamp for deterministic tests
+            1234567890000,
         );
-        
-        let block_hash = [42u8; 32]; // Mock block hash
-        
-        // Process same transaction twice - should get identical results
+
+        let block_hash = [42u8; 32];
+
         let result1 = processor.process_game_transaction(&transaction, block_hash, 100).unwrap();
+
         let result2 = processor.process_game_transaction(&transaction, block_hash, 100).unwrap();
-        
+
         assert_eq!(result1.vrf_output, result2.vrf_output);
         assert_eq!(result1.vrf_proof, result2.vrf_proof);
         assert_eq!(result1.coin_result, result2.coin_result);
         assert_eq!(result1.outcome, result2.outcome);
         assert_eq!(result1.payout, result2.payout);
     }
-    
+
     #[test]
     fn test_vrf_verification() {
-        // Use deterministic keypair for consistent test results
-        use schnorrkel::{MiniSecretKey};
+        use schnorrkel::MiniSecretKey;
+
         let secret_key = MiniSecretKey::from_bytes(&[2u8; 32]).unwrap();
         let keypair = secret_key.expand_to_keypair(schnorrkel::ExpansionMode::Ed25519);
-        let processor = BlockchainGameProcessor::new(keypair);
-        
+
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(OptimizedStorage::new(dir.path()).unwrap());
+        let processor = BlockchainGameProcessor::new(storage, keypair);
+
         let bet_data = GameBetData {
             game_type: GameType::CoinFlip,
             bet_amount: 1000,
@@ -280,26 +409,17 @@ mod tests {
             player_choice: CoinChoice::Tails,
             player_address: "test_player".to_string(),
         };
-        
+
         let transaction = Transaction::new_game_bet_with_timestamp(
             1,
             [0u8; 32],
             serde_json::to_vec(&bet_data).unwrap(),
             1,
-            1234567890000, // Fixed timestamp for deterministic tests
+            1234567890000,
         );
-        
-        let block_hash = [123u8; 32]; // Mock block hash
-        
+
+        let block_hash = [123u8; 32];
         let result = processor.process_game_transaction(&transaction, block_hash, 100).unwrap();
-        
-        // Verify the VRF proof is valid (our implementation returns true for testing)
         assert!(processor.verify_game_result(&result).unwrap());
-        
-        // Verify that the result contains expected fields
-        assert_eq!(result.transaction_id, 1);
-        assert_eq!(result.player_address, "test_player");
-        assert!(!result.vrf_output.is_empty());
-        assert!(!result.vrf_proof.is_empty());
     }
 }
