@@ -4,7 +4,7 @@
 
 use super::{
     handlers::AppState,
-    middleware::{create_cors_layer, request_id_middleware},
+    middleware::{create_cors_layer, request_id_middleware, response_time_middleware},
     routes::create_router,
     storage::ApiStorage,
     websocket::WebSocketManager,
@@ -48,6 +48,10 @@ pub struct ApiConfig {
 
     // Backpressure settings
     pub tx_queue_capacity: usize,
+
+    /// Optional pinned VRF public key (hex). If set, the node will refuse to start unless
+    /// the persistent keypair matches this value.
+    pub pinned_vrf_public_key_hex: Option<String>,
 }
 
 impl Default for ApiConfig {
@@ -74,6 +78,8 @@ impl Default for ApiConfig {
 
             // Backpressure defaults
             tx_queue_capacity: 50_000,
+
+            pinned_vrf_public_key_hex: None,
         }
     }
 }
@@ -171,6 +177,19 @@ impl ApiServer {
                 BlockchainGameProcessor::new_with_persistent_key(self.storage.clone())
                     .expect("Failed to initialize persistent VRF key"),
             );
+
+            if let Some(pinned_hex) = &self.config.pinned_vrf_public_key_hex {
+                let pinned = hex::decode(pinned_hex.trim_start_matches("0x"))
+                    .expect("Invalid pinned_vrf_public_key_hex (must be hex)");
+                if pinned != processor.get_public_key() {
+                    panic!(
+                        "Pinned VRF public key does not match persistent key (configured={}, actual={})",
+                        pinned_hex,
+                        hex::encode(processor.get_public_key())
+                    );
+                }
+                info!("🔐 Pinned VRF public key verified: {}", pinned_hex);
+            }
             
             // Use real blockchain connection if available, otherwise create dummy channel
             let sender = if let Some(blockchain_sender) = &self.blockchain_tx_sender {
@@ -257,6 +276,9 @@ impl ApiServer {
         create_router(state)
             // Request ID middleware (first for tracing)
             .layer(axum::middleware::from_fn(request_id_middleware))
+
+            // Response time header for frontend diagnostics
+            .layer(axum::middleware::from_fn(response_time_middleware))
             
             // CORS layer (before timeout to handle preflight)
             .layer(create_cors_layer(self.config.allowed_origins.clone()))

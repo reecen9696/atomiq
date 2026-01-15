@@ -7,6 +7,8 @@ use axum::{
     middleware::Next,
     response::Response,
 };
+use axum::http::HeaderValue;
+use std::time::Instant;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::cors::ExposeHeaders;
 use axum::http::HeaderName;
@@ -14,6 +16,9 @@ use uuid::Uuid;
 
 /// Request ID header key
 pub const REQUEST_ID_HEADER: &str = "x-request-id";
+
+/// Response time header key
+pub const RESPONSE_TIME_HEADER: &str = "x-response-time-ms";
 
 /// Create CORS middleware with configurable origins
 pub fn create_cors_layer(allowed_origins: Vec<String>) -> CorsLayer {
@@ -23,7 +28,10 @@ pub fn create_cors_layer(allowed_origins: Vec<String>) -> CorsLayer {
             .allow_origin(Any)
             .allow_methods(Any)
             .allow_headers(Any)
-            .expose_headers(ExposeHeaders::list([HeaderName::from_static(REQUEST_ID_HEADER)]))
+            .expose_headers(ExposeHeaders::list([
+                HeaderName::from_static(REQUEST_ID_HEADER),
+                HeaderName::from_static(RESPONSE_TIME_HEADER),
+            ]))
     } else {
         // Production mode: specific origins
         CorsLayer::new()
@@ -32,10 +40,33 @@ pub fn create_cors_layer(allowed_origins: Vec<String>) -> CorsLayer {
                     .filter_map(|o| o.parse().ok())
                     .collect::<Vec<_>>()
             )
-            .allow_methods([axum::http::Method::GET])
+            .allow_methods([
+                axum::http::Method::GET,
+                axum::http::Method::POST,
+                axum::http::Method::OPTIONS,
+            ])
             .allow_headers(Any)
-            .expose_headers(ExposeHeaders::list([HeaderName::from_static(REQUEST_ID_HEADER)]))
+            .expose_headers(ExposeHeaders::list([
+                HeaderName::from_static(REQUEST_ID_HEADER),
+                HeaderName::from_static(RESPONSE_TIME_HEADER),
+            ]))
     }
+}
+
+/// Middleware to add an end-to-end response time header.
+pub async fn response_time_middleware(
+    request: Request,
+    next: Next,
+) -> Response {
+    let start = Instant::now();
+    let mut response = next.run(request).await;
+    let ms = start.elapsed().as_millis().to_string();
+
+    if let Ok(value) = HeaderValue::from_str(&ms) {
+        response.headers_mut().insert(RESPONSE_TIME_HEADER, value);
+    }
+
+    response
 }
 
 /// Middleware to add request ID to all requests

@@ -45,7 +45,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             .route("/api/game/:id", get(get_game_result))
             .route("/api/verify/vrf", post(verify_vrf))
             .route("/api/verify/game/:id", get(verify_game_by_id))
-            .route("/api/tokens", get(list_supported_tokens));
+            .route("/api/tokens", get(list_supported_tokens))
+            .route("/api/games/recent", get(recent_games_handler));
     }
     
     // Attach shared state
@@ -59,7 +60,8 @@ pub fn create_game_router(game_state: Arc<crate::api::games::GameApiState>) -> R
         get_game_result as original_get_game_result,
         verify_vrf as original_verify_vrf, 
         verify_game_by_id as original_verify_game_by_id, 
-        list_supported_tokens as original_list_supported_tokens
+        list_supported_tokens as original_list_supported_tokens,
+        recent_games as original_recent_games,
     };
     
     Router::new()
@@ -69,6 +71,7 @@ pub fn create_game_router(game_state: Arc<crate::api::games::GameApiState>) -> R
         .route("/api/verify/vrf", post(original_verify_vrf))
         .route("/api/verify/game/:id", get(original_verify_game_by_id))
         .route("/api/tokens", get(original_list_supported_tokens))
+        .route("/api/games/recent", get(original_recent_games))
         .with_state((*game_state).clone())
 }
 

@@ -8,19 +8,77 @@ use crate::{
     blockchain_game_processor::{BlockchainGameProcessor, GameBetData},
     common::types::Transaction,
     api::storage::ApiStorage,
+    api::models::{RecentGamesResponse, RecentGameSummary},
     fairness::{FairnessError, FairnessWaiter},
     games::{
         types::{CoinFlipPlayRequest, GameResponse, Token, VerifyVRFRequest, VerifyVRFResponse, GameType},
     },
     storage::OptimizedStorage,
     finalization::FinalizationWaiter,
+    game_store,
 };
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::Json,
 };
 use std::sync::Arc;
+use serde::Deserialize;
+
+/// Recent games query parameters
+#[derive(Debug, Deserialize)]
+pub struct RecentGamesQuery {
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
+/// Recent casino games (newest-first)
+/// GET /api/games/recent?limit={n}&cursor={hex}
+pub async fn recent_games(
+    State(state): State<GameApiState>,
+    Query(params): Query<RecentGamesQuery>,
+) -> Result<Json<RecentGamesResponse>, (StatusCode, String)> {
+    let limit = params.limit.unwrap_or(50).min(200);
+
+    let (tx_ids, next_cursor) = game_store::load_recent_game_tx_ids(
+        state.storage.as_ref(),
+        params.cursor.as_deref(),
+        limit,
+    )
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to load recent games index: {}", e),
+        )
+    })?;
+
+    let mut games = Vec::with_capacity(tx_ids.len());
+    for tx_id in tx_ids {
+        let Ok(Some(result)) = game_store::load_game_result(state.storage.as_ref(), tx_id) else {
+            continue;
+        };
+
+        games.push(RecentGameSummary {
+            game_id: format!("tx-{}", result.transaction_id),
+            tx_id: result.transaction_id,
+            player_id: result.player_address,
+            game_type: result.game_type,
+            token: result.token,
+            bet_amount: result.bet_amount,
+            player_choice: result.player_choice,
+            coin_result: result.coin_result,
+            outcome: result.outcome,
+            payout: result.payout,
+            timestamp: result.timestamp,
+            block_height: result.block_height,
+            block_hash: hex::encode(result.block_hash),
+        });
+    }
+
+    Ok(Json(RecentGamesResponse { games, next_cursor }))
+}
 
 /// Shared state for game API
 #[derive(Clone)]
@@ -333,11 +391,12 @@ pub async fn verify_vrf(
         }));
     }
 
-    // Verify cryptographically from request data (no in-memory state).
+    // Verify cryptographically from request data, but do NOT trust a caller-supplied public key.
+    // Pin verification to the node's configured VRF key.
     let vrf_bundle = crate::games::types::VRFBundle {
         vrf_output: request.vrf_output.clone(),
         vrf_proof: request.vrf_proof.clone(),
-        public_key: request.public_key.clone(),
+        public_key: hex::encode(state.game_processor.get_public_key()),
         input_message: request.input_message.clone(),
     };
 

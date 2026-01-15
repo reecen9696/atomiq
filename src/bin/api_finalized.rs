@@ -64,6 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         preload_recent_blocks: 100,
         enable_games: true, // Enable casino games
         tx_queue_capacity: 50_000,
+        pinned_vrf_public_key_hex: None,
     };
 
     // Create API server with finalization support

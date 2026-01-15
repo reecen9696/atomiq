@@ -7,6 +7,7 @@ use clap::Parser;
 use atomiq::config::StorageConfig;
 use atomiq::storage::OptimizedStorage;
 use std::sync::Arc;
+use std::path::Path;
 
 #[derive(Parser, Debug)]
 #[command(name = "atomiq-api")]
@@ -55,6 +56,14 @@ struct Args {
     /// Enable casino game endpoints
     #[arg(long, default_value = "true")]
     enable_games: bool,
+
+    /// Tx ingest queue capacity (bounded backpressure)
+    #[arg(long, default_value = "50000")]
+    tx_queue_capacity: usize,
+
+    /// Optional pinned VRF public key hex; server refuses to start if mismatch
+    #[arg(long)]
+    pinned_vrf_public_key_hex: Option<String>,
 }
 
 #[tokio::main]
@@ -62,15 +71,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // Open database (read-only mode)
-    let storage_config = StorageConfig {
-        data_directory: args.db_path.clone(),
-        clear_on_start: false,
-        ..Default::default()
+    // Note: users often run this binary from the workspace root; make relative paths robust.
+    let open_storage = |data_directory: String| -> Result<Arc<OptimizedStorage>, Box<dyn std::error::Error>> {
+        let storage_config = StorageConfig {
+            data_directory,
+            clear_on_start: false,
+            ..Default::default()
+        };
+
+        println!("📂 Opening blockchain database: {}", storage_config.data_directory);
+        let storage = Arc::new(OptimizedStorage::new_with_config(&storage_config)?);
+        println!("✅ Database opened successfully");
+        Ok(storage)
     };
 
-    println!("📂 Opening blockchain database: {}", storage_config.data_directory);
-    let storage = Arc::new(OptimizedStorage::new_with_config(&storage_config)?);
-    println!("✅ Database opened successfully");
+    let storage = match open_storage(args.db_path.clone()) {
+        Ok(storage) => storage,
+        Err(original_err) => {
+            let configured_path = Path::new(&args.db_path);
+            if configured_path.is_relative() {
+                let fallback_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(configured_path);
+                match fallback_path.to_str() {
+                    Some(fallback_path) => open_storage(fallback_path.to_string())?,
+                    None => return Err(original_err),
+                }
+            } else {
+                return Err(original_err);
+            }
+        }
+    };
 
     // Parse CORS origins
     let allowed_origins: Vec<String> = args.cors_origins
@@ -104,7 +133,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_concurrent_requests: 5000,
         preload_recent_blocks: 1000,
         enable_games: args.enable_games,
-        tx_queue_capacity: 50_000,
+        tx_queue_capacity: args.tx_queue_capacity,
+        pinned_vrf_public_key_hex: args.pinned_vrf_public_key_hex,
     };
 
     // Create and run server

@@ -1,7 +1,7 @@
 //! Optimized RocksDB storage layer for high-performance blockchain
 
 use crate::config::{StorageConfig, CompressionType};
-use rocksdb::{DB, Options, WriteBatch};
+use rocksdb::{DB, Direction, IteratorMode, Options, WriteBatch};
 use hotstuff_rs::block_tree::pluggables::{KVStore, KVGet};
 use std::path::Path;
 
@@ -72,6 +72,40 @@ impl OptimizedStorage {
     /// Delete a key.
     pub fn delete(&self, key: &[u8]) -> Result<(), rocksdb::Error> {
         self.db.delete(key)
+    }
+
+    /// Scan keys with the given prefix in lexicographic order.
+    ///
+    /// If `cursor` is provided, scanning resumes *after* the cursor key.
+    pub fn scan_prefix(
+        &self,
+        prefix: &[u8],
+        cursor: Option<&[u8]>,
+        limit: usize,
+    ) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let start = cursor.unwrap_or(prefix);
+        let mut out = Vec::new();
+
+        for item in self.db.iterator(IteratorMode::From(start, Direction::Forward)) {
+            let Ok((key, value)) = item else {
+                continue;
+            };
+
+            if cursor.is_some() && key.as_ref() == start {
+                continue;
+            }
+
+            if !key.as_ref().starts_with(prefix) {
+                break;
+            }
+
+            out.push((key.to_vec(), value.to_vec()));
+            if out.len() >= limit {
+                break;
+            }
+        }
+
+        out
     }
 }
 

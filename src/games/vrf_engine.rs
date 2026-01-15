@@ -3,6 +3,8 @@ use schnorrkel::{Keypair, PublicKey, SecretKey, Signature};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
+const VRF_SIGNING_CONTEXT: &[u8] = b"substrate";
+
 /// VRF-based game outcome generator
 pub struct VRFGameEngine {
     keypair: Arc<Keypair>,
@@ -56,7 +58,7 @@ impl VRFGameEngine {
         use schnorrkel::context::SigningContext;
 
         // Create signing context
-        let ctx = SigningContext::new(b"HotstuffCasino");
+        let ctx = SigningContext::new(VRF_SIGNING_CONTEXT);
         
         // Sign the message (VRF output is derived from signature)
         let transcript = ctx.bytes(message);
@@ -119,7 +121,7 @@ impl VRFGameEngine {
 
         // Verify signature
         use schnorrkel::context::SigningContext;
-        let ctx = SigningContext::new(b"HotstuffCasino");
+        let ctx = SigningContext::new(VRF_SIGNING_CONTEXT);
         let transcript = ctx.bytes(expected_input.as_bytes());
         
         let is_valid = public_key.verify(transcript, &signature).is_ok();

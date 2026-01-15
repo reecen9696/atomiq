@@ -76,6 +76,8 @@ pub struct BlockDetailResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransactionResponse {
     pub tx_id: String,
+    /// Hex-encoded transaction hash (computed from stored tx fields)
+    pub tx_hash: String,
     pub included_in: InclusionInfo,
     #[serde(rename = "type")]
     pub tx_type: String,
@@ -131,6 +133,31 @@ pub struct TransactionData {
 pub struct MetricsResponse {
     pub performance: PerformanceInfo,
     pub cache: CacheInfo,
+}
+
+/// Recent casino games response (paginated)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentGamesResponse {
+    pub games: Vec<RecentGameSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentGameSummary {
+    pub game_id: String,
+    pub tx_id: u64,
+    pub player_id: String,
+    pub game_type: GameType,
+    pub token: Token,
+    pub bet_amount: u64,
+    pub player_choice: CoinChoice,
+    pub coin_result: CoinFlipResult,
+    pub outcome: GameOutcome,
+    pub payout: u64,
+    pub timestamp: u64,
+    pub block_height: u64,
+    pub block_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

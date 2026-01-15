@@ -24,6 +24,63 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+/// Recent games query parameters
+#[derive(Debug, Deserialize)]
+pub struct RecentGamesQuery {
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
+/// Recent casino games (newest-first)
+/// GET /api/games/recent?limit={n}&cursor={hex}
+pub async fn recent_games_handler(
+    Extension(request_id): Extension<RequestId>,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<RecentGamesQuery>,
+) -> Result<Json<RecentGamesResponse>, ApiError> {
+    let limit = params.limit.unwrap_or(50).min(200);
+    let raw_storage = state.storage.get_raw_storage();
+
+    let (tx_ids, next_cursor) = game_store::load_recent_game_tx_ids(
+        raw_storage.as_ref(),
+        params.cursor.as_deref(),
+        limit,
+    )
+    .map_err(|e| {
+        ApiError::internal_error(
+            request_id.0.clone(),
+            format!("Failed to load recent games index: {}", e),
+        )
+    })?;
+
+    let mut games = Vec::with_capacity(tx_ids.len());
+    for tx_id in tx_ids {
+        let Ok(Some(result)) = game_store::load_game_result(raw_storage.as_ref(), tx_id) else {
+            continue;
+        };
+
+        games.push(RecentGameSummary {
+            game_id: format!("tx-{}", result.transaction_id),
+            tx_id: result.transaction_id,
+            player_id: result.player_address,
+            game_type: result.game_type,
+            token: result.token,
+            bet_amount: result.bet_amount,
+            player_choice: result.player_choice,
+            coin_result: result.coin_result,
+            outcome: result.outcome,
+            payout: result.payout,
+            timestamp: result.timestamp,
+            block_height: result.block_height,
+            block_hash: hex::encode(result.block_hash),
+        });
+    }
+
+    Ok(Json(RecentGamesResponse { games, next_cursor }))
+}
+
 /// Shared application state
 pub struct AppState {
     pub storage: ApiStorage,
@@ -229,7 +286,12 @@ pub async fn transaction_handler(
 ) -> Result<Json<TransactionResponse>, ApiError> {
     // For now, we'll use the existing transaction lookup
     // TODO: Implement hash-based lookup when available
-    if let Ok(tx_id_u64) = tx_id.parse::<u64>() {
+    let tx_id_u64 = tx_id
+        .strip_prefix("tx-")
+        .unwrap_or(tx_id.as_str())
+        .parse::<u64>();
+
+    if let Ok(tx_id_u64) = tx_id_u64 {
         let result = state.storage.find_transaction(tx_id_u64)
             .map_err(|e| ApiError::internal_error(
                 request_id.0.clone(),
@@ -310,6 +372,7 @@ pub async fn transaction_handler(
         
         Ok(Json(TransactionResponse {
             tx_id: tx_id.clone(),
+            tx_hash: hex::encode(tx.hash()),
             included_in: InclusionInfo {
                 block_height,
                 block_hash: hex::encode(block.block_hash),
