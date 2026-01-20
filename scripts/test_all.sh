@@ -2,7 +2,7 @@
 echo "🧪 Testing Atomiq Blockchain Functionality"
 echo "=========================================="
 
-cd /Users/reece/code/projects/hotstuffcasino/hotstuff_rs/atomiq
+cd /Users/reece/code/projects/atomik/blockchain
 
 echo ""
 echo "✅ Step 1: Running all tests..."

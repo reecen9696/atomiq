@@ -29,6 +29,25 @@ pub struct GameBetData {
     pub player_address: String,
 }
 
+/// Settlement status for tracking game resolution on Solana
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum SettlementStatus {
+    /// Game completed, awaiting settlement
+    PendingSettlement,
+    /// Transaction submitted to Solana mempool
+    SubmittedToSolana,
+    /// Transaction confirmed on Solana blockchain
+    SettlementComplete,
+    /// Settlement failed with error message
+    SettlementFailed,
+}
+
+impl Default for SettlementStatus {
+    fn default() -> Self {
+        SettlementStatus::PendingSettlement
+    }
+}
+
 /// Game result stored in blockchain state
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BlockchainGameResult {
@@ -49,6 +68,27 @@ pub struct BlockchainGameResult {
     pub block_height: u64,
     /// Finalized block hash used as VRF context
     pub block_hash: [u8; 32],
+    
+    // Settlement tracking fields
+    /// Current settlement status
+    #[serde(default)]
+    pub settlement_status: SettlementStatus,
+    /// Version for optimistic locking
+    #[serde(default = "default_version")]
+    pub version: u64,
+    /// Solana transaction hash when submitted
+    #[serde(default)]
+    pub solana_tx_id: Option<String>,
+    /// Error message if settlement failed
+    #[serde(default)]
+    pub settlement_error: Option<String>,
+    /// Timestamp when settlement completed
+    #[serde(default)]
+    pub settlement_completed_at: Option<u64>,
+}
+
+fn default_version() -> u64 {
+    1
 }
 
 /// Blockchain-side game processor that generates VRF outcomes
@@ -185,6 +225,11 @@ impl BlockchainGameProcessor {
             timestamp: transaction.timestamp,
             block_height,
             block_hash,
+            settlement_status: SettlementStatus::default(),
+            version: 1,
+            solana_tx_id: None,
+            settlement_error: None,
+            settlement_completed_at: None,
         };
 
         game_store::store_game_result(self.storage.as_ref(), &game_result)?;
