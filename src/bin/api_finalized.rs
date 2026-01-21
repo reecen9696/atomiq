@@ -10,16 +10,68 @@ use atomiq::{
     finalization::FinalizationWaiter,
     DirectCommitHandle,
 };
+use atomiq::config::AtomiqConfig;
+use clap::Parser;
 use std::sync::Arc;
-use tracing::{info, error};
+use tracing::info;
+
+#[derive(Parser, Debug)]
+#[command(name = "api-finalized")]
+#[command(about = "Atomiq API Server with blockchain finalization (DirectCommit)", long_about = None)]
+struct Args {
+    /// API server host
+    #[arg(long, default_value = "0.0.0.0")]
+    host: String,
+
+    /// API server port
+    #[arg(long, default_value = "8080")]
+    port: u16,
+
+    /// Database directory
+    #[arg(long, default_value = "./DB/blockchain_data")]
+    db_path: String,
+
+    /// Allowed CORS origins (comma-separated, use * for all)
+    #[arg(long, default_value = "*")]
+    cors_origins: String,
+
+    /// Request timeout in seconds
+    #[arg(long, default_value = "30")]
+    timeout: u64,
+
+    /// Node ID
+    #[arg(long, default_value = "finalized_node")]
+    node_id: String,
+
+    /// Network name
+    #[arg(long, default_value = "devnet")]
+    network: String,
+
+    /// Enable casino game + settlement endpoints
+    #[arg(long, default_value = "true")]
+    enable_games: bool,
+
+    /// Tx ingest queue capacity (bounded backpressure)
+    #[arg(long, default_value = "50000")]
+    tx_queue_capacity: usize,
+
+    /// Optional pinned VRF public key hex; server refuses to start if mismatch
+    #[arg(long)]
+    pinned_vrf_public_key_hex: Option<String>,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Args::parse();
+
     info!("🚀 Starting Atomiq with API + Finalization");
 
     // Create a high-performance blockchain with DirectCommit
     info!("📦 Creating DirectCommit blockchain...");
-    let (app, handle) = BlockchainFactory::create_high_performance_persistent().await?;
+    let mut config = AtomiqConfig::high_performance();
+    config.storage.clear_on_start = false;
+    config.storage.data_directory = args.db_path.clone();
+    let (_app, handle) = BlockchainFactory::create_blockchain(config).await?;
     
     // Get the DirectCommit engine from the handle
     let engine = if let Some(direct_commit_handle) = handle.as_any().downcast_ref::<DirectCommitHandle>() {
@@ -48,23 +100,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tx_sender = app_clone.read().await.transaction_sender();
     
     // Create API configuration
+    let allowed_origins: Vec<String> = args
+        .cors_origins
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .collect();
+
+    let api_host_for_log = args.host.clone();
+    let api_port_for_log = args.port;
+
     let api_config = ApiConfig {
-        host: "127.0.0.1".to_string(),
-        port: 3000,
-        allowed_origins: vec!["*".to_string()],
-        request_timeout_secs: 30,
-        node_id: "finalized_node".to_string(),
-        network: "devnet".to_string(),
-        version: "1.0.0".to_string(),
+        host: args.host,
+        port: args.port,
+        allowed_origins,
+        request_timeout_secs: args.timeout,
+        node_id: args.node_id,
+        network: args.network,
+        version: env!("CARGO_PKG_VERSION").to_string(),
         tls_enabled: false,
         cert_path: None,
         key_path: None,
         enable_metrics: true,
         max_concurrent_requests: 5000,
         preload_recent_blocks: 100,
-        enable_games: true, // Enable casino games
-        tx_queue_capacity: 50_000,
-        pinned_vrf_public_key_hex: None,
+        enable_games: args.enable_games,
+        tx_queue_capacity: args.tx_queue_capacity,
+        pinned_vrf_public_key_hex: args.pinned_vrf_public_key_hex,
     };
 
     // Create API server with finalization support
@@ -72,13 +133,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server = ApiServer::with_finalization(api_config, storage, finalization_waiter, tx_sender);
     
     info!("✅ System ready!");
-    info!("📡 API: http://127.0.0.1:3000");
-    info!("🎮 Games: POST http://127.0.0.1:3000/api/coinflip/play");
+    info!("📡 API: http://{}:{}", api_host_for_log, api_port_for_log);
+    info!("🎮 Games: POST http://{}:{}/api/coinflip/play", api_host_for_log, api_port_for_log);
     info!("⏱️  Block time: 10ms (DirectCommit mode)");
     info!("🔒 Finalization: Enabled (responses wait for block commits)");
     info!("");
     info!("Try playing a game:");
-    info!(r#"  curl -X POST http://127.0.0.1:3000/api/coinflip/play \
+    info!(r#"  curl -X POST http://127.0.0.1:8080/api/coinflip/play \
     -H "Content-Type: application/json" \
     -d '{{"bet_amount": 100, "coin_choice": "Heads", "token": "ATOM"}}'
 "#);

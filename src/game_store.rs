@@ -163,29 +163,87 @@ pub fn load_pending_settlements(
         limit.max(1),
     );
 
+    let rows_count = rows.len();
+    tracing::info!(
+        "load_pending_settlements: settlement index returned {} rows, cursor={:?}",
+        rows_count,
+        cursor_hex
+    );
+
+    // FALLBACK: If settlement index is empty (games created before index was added),
+    // scan recent games to find pending settlements
+    if rows.is_empty() && cursor_hex.is_none() {
+        tracing::info!("load_pending_settlements: Using fallback - scanning recent games");
+        let (tx_ids, _) = load_recent_game_tx_ids(storage, None, limit * 2)?;
+        tracing::info!("load_pending_settlements: Found {} recent game tx_ids", tx_ids.len());
+        let mut pending_games = Vec::new();
+        
+        for tx_id in tx_ids {
+            if let Ok(Some(game_result)) = load_game_result(storage, tx_id) {
+                if game_result.settlement_status == SettlementStatus::PendingSettlement {
+                    pending_games.push(game_result);
+                    if pending_games.len() >= limit {
+                        break;
+                    }
+                }
+            }
+        }
+        
+        tracing::info!("load_pending_settlements: Fallback returned {} pending games", pending_games.len());
+        return Ok((pending_games, None));
+    }
+
     let mut pending_games = Vec::with_capacity(rows.len());
     let mut next_cursor: Option<String> = None;
+    let mut empty_count = 0;
+    let mut parse_errors = 0;
+    let mut load_errors = 0;
+    let mut status_mismatch = 0;
 
     for (key, value) in rows {
         // Skip empty values (removed settlements)
         if value.is_empty() {
+            empty_count += 1;
             continue;
         }
 
         // Parse settlement summary to get transaction ID
-        if let Ok(summary) = serde_json::from_slice::<SettlementSummary>(&value) {
-            // Load full game result
-            if let Ok(Some(game_result)) = load_game_result(storage, summary.transaction_id) {
-                // Double-check status (in case of race conditions)
-                if game_result.settlement_status == SettlementStatus::PendingSettlement {
-                    pending_games.push(game_result);
+        match serde_json::from_slice::<SettlementSummary>(&value) {
+            Ok(summary) => {
+                // Load full game result
+                match load_game_result(storage, summary.transaction_id) {
+                    Ok(Some(game_result)) => {
+                        // Double-check status (in case of race conditions)
+                        if game_result.settlement_status == SettlementStatus::PendingSettlement {
+                            pending_games.push(game_result);
+                        } else {
+                            status_mismatch += 1;
+                        }
+                    }
+                    Ok(None) => {
+                        tracing::warn!("Settlement index has tx_id {} but game result not found", summary.transaction_id);
+                        load_errors += 1;
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to load game result for tx_id {}: {}", summary.transaction_id, e);
+                        load_errors += 1;
+                    }
                 }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to parse settlement summary: {}", e);
+                parse_errors += 1;
             }
         }
 
         // Set next cursor to the last key processed
         next_cursor = Some(hex::encode(&key));
     }
+
+    tracing::info!(
+        "load_pending_settlements: Processed {} settlement index entries - empty:{}, parse_errors:{}, load_errors:{}, status_mismatch:{}, returned:{}",
+        rows_count, empty_count, parse_errors, load_errors, status_mismatch, pending_games.len()
+    );
 
     // Only return cursor if we might have more results
     let final_cursor = if pending_games.len() >= limit {

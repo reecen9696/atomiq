@@ -7,7 +7,7 @@ use super::{
     websocket::{websocket_handler, transaction_websocket_handler},
     monitoring::metrics_handler,
     games_wrappers::{play_coinflip, get_game_result, verify_vrf, verify_game_by_id, list_supported_tokens},
-    settlement::{get_pending_settlements, update_settlement_status, ingest_settlement_event},
+    settlement::{get_pending_settlements, get_settlement_game, update_settlement_status, ingest_settlement_event},
 };
 use axum::{
     routing::{get, post},
@@ -50,7 +50,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             .route("/api/games/recent", get(recent_games_handler))
             // Settlement API endpoints
             .route("/api/settlement/pending", get(get_pending_settlements))
-            .route("/api/settlement/games/:tx_id", post(update_settlement_status))
+            .route(
+                "/api/settlement/games/:tx_id",
+                get(get_settlement_game).post(update_settlement_status),
+            )
             .route("/api/settlement/ingest", post(ingest_settlement_event));
     }
     

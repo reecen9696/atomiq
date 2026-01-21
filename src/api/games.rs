@@ -6,6 +6,7 @@
 
 use crate::{
     blockchain_game_processor::{BlockchainGameProcessor, GameBetData},
+    blockchain_game_processor::SettlementStatus,
     common::types::Transaction,
     api::storage::ApiStorage,
     api::models::{RecentGamesResponse, RecentGameSummary},
@@ -63,6 +64,11 @@ pub async fn recent_games(
         games.push(RecentGameSummary {
             game_id: format!("tx-{}", result.transaction_id),
             tx_id: result.transaction_id,
+            processed: result.settlement_status != SettlementStatus::PendingSettlement,
+            settlement_status: result.settlement_status.clone(),
+            solana_tx_id: result.solana_tx_id.clone(),
+            settlement_error: result.settlement_error.clone(),
+            settlement_completed_at: result.settlement_completed_at,
             player_id: result.player_address,
             game_type: result.game_type,
             token: result.token,

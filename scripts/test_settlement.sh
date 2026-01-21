@@ -27,7 +27,7 @@ test_response() {
         echo -e "$FAIL $name (Expected HTTP $expected, got $status)"
         return 1
     fi
-}
+} 
 
 # Test 1: Health Check
 echo "🔍 Test 1: API Health Check"

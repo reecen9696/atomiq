@@ -11,6 +11,7 @@ use super::{
 };
 use crate::{
     blockchain_game_processor::{load_vrf_public_key, BlockchainGameProcessor, GameBetData},
+    blockchain_game_processor::SettlementStatus,
     fairness::FairnessWaiter,
     finalization::FinalizationWaiter,
     game_store,
@@ -64,6 +65,11 @@ pub async fn recent_games_handler(
         games.push(RecentGameSummary {
             game_id: format!("tx-{}", result.transaction_id),
             tx_id: result.transaction_id,
+            processed: result.settlement_status != SettlementStatus::PendingSettlement,
+            settlement_status: result.settlement_status.clone(),
+            solana_tx_id: result.solana_tx_id.clone(),
+            settlement_error: result.settlement_error.clone(),
+            settlement_completed_at: result.settlement_completed_at,
             player_id: result.player_address,
             game_type: result.game_type,
             token: result.token,
