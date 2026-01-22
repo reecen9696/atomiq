@@ -140,11 +140,21 @@ pub async fn verify_vrf(
         token: crate::games::types::Token::Sol { decimals: 9 },
         player_choice: crate::games::types::CoinChoice::Heads,
         outcome: crate::games::types::GameOutcome::Heads,
+        coin_result: crate::games::types::CoinFlipResult::Heads,
         vrf_proof,
         vrf_output,
+        vrf_input_message: String::new(),
         payout: 0,
         timestamp: 0,
         block_height: 0,
+        block_hash: [0u8; 32],
+        settlement_status: crate::blockchain_game_processor::SettlementStatus::PendingSettlement,
+        version: 1,
+        solana_tx_id: None,
+        settlement_error: None,
+        settlement_completed_at: None,
+        retry_count: 0,
+        next_retry_after: None,
     };
     
     // Verify the proof using blockchain's VRF engine

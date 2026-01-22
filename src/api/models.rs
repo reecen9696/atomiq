@@ -157,6 +157,10 @@ pub struct RecentGameSummary {
     pub settlement_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub settlement_completed_at: Option<u64>,
+    #[serde(default)]
+    pub retry_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_retry_after: Option<i64>,
     pub player_id: String,
     pub game_type: GameType,
     pub token: Token,

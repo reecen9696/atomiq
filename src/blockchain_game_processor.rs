@@ -38,8 +38,10 @@ pub enum SettlementStatus {
     SubmittedToSolana,
     /// Transaction confirmed on Solana blockchain
     SettlementComplete,
-    /// Settlement failed with error message
+    /// Settlement failed but will retry (retry_count < 3)
     SettlementFailed,
+    /// Settlement failed permanently after max retries - requires manual review
+    SettlementFailedPermanent,
 }
 
 impl Default for SettlementStatus {
@@ -85,6 +87,12 @@ pub struct BlockchainGameResult {
     /// Timestamp when settlement completed
     #[serde(default)]
     pub settlement_completed_at: Option<u64>,
+    /// Retry counter for failed settlements (0 = first attempt)
+    #[serde(default)]
+    pub retry_count: u32,
+    /// Unix timestamp (ms) when next retry should be attempted
+    #[serde(default)]
+    pub next_retry_after: Option<i64>,
 }
 
 fn default_version() -> u64 {
@@ -230,6 +238,8 @@ impl BlockchainGameProcessor {
             solana_tx_id: None,
             settlement_error: None,
             settlement_completed_at: None,
+            retry_count: 0,
+            next_retry_after: None,
         };
 
         game_store::store_game_result(self.storage.as_ref(), &game_result)?;

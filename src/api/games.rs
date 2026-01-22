@@ -69,6 +69,8 @@ pub async fn recent_games(
             solana_tx_id: result.solana_tx_id.clone(),
             settlement_error: result.settlement_error.clone(),
             settlement_completed_at: result.settlement_completed_at,
+            retry_count: result.retry_count,
+            next_retry_after: result.next_retry_after,
             player_id: result.player_address,
             game_type: result.game_type,
             token: result.token,

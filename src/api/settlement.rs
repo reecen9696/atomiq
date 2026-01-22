@@ -61,6 +61,12 @@ pub struct SettlementUpdateRequest {
     /// Error description if settlement failed
     #[serde(default)]
     pub error_message: Option<String>,
+    /// Retry counter for failed settlements
+    #[serde(default)]
+    pub retry_count: Option<u32>,
+    /// Unix timestamp (ms) when next retry should be attempted
+    #[serde(default)]
+    pub next_retry_after: Option<i64>,
 }
 
 /// Settlement update response
@@ -108,6 +114,12 @@ pub struct GameSettlementInfo {
     pub vrf_output: String,
     pub block_height: u64,
     pub version: u64,
+    #[serde(default)]
+    pub retry_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_retry_after: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub solana_tx_id: Option<String>,
 }
 
 /// Response for pending settlements endpoint
@@ -149,6 +161,9 @@ impl From<BlockchainGameResult> for GameSettlementInfo {
             vrf_output: hex::encode(result.vrf_output),
             block_height: result.block_height,
             version: result.version,
+            retry_count: result.retry_count,
+            next_retry_after: result.next_retry_after,
+            solana_tx_id: result.solana_tx_id,
         }
     }
 }
@@ -277,6 +292,14 @@ pub async fn update_settlement_status(
     game_result.version += 1;
     game_result.solana_tx_id = update.solana_tx_id.clone();
     game_result.settlement_error = update.error_message.clone();
+    
+    // Update retry fields if provided
+    if let Some(retry_count) = update.retry_count {
+        game_result.retry_count = retry_count;
+    }
+    if update.next_retry_after.is_some() {
+        game_result.next_retry_after = update.next_retry_after;
+    }
 
     // Set completion timestamp if settled
     if update.status == SettlementStatus::SettlementComplete {
@@ -399,6 +422,8 @@ pub async fn ingest_settlement_event(
         solana_tx_id: None,
         settlement_error: None,
         settlement_completed_at: None,
+        retry_count: 0,
+        next_retry_after: None,
     };
 
     game_store::store_game_result(state.storage.get_raw_storage().as_ref(), &game_result).map_err(|e| {

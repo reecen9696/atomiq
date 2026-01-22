@@ -22,6 +22,10 @@ pub struct SettlementSummary {
     pub payout: u64,
     pub version: u64,
     pub block_height: u64,
+    #[serde(default)]
+    pub retry_count: u32,
+    #[serde(default)]
+    pub next_retry_after: Option<i64>,
 }
 
 fn game_result_key(tx_id: u64) -> Vec<u8> {
@@ -127,6 +131,8 @@ pub fn store_game_result(storage: &OptimizedStorage, result: &BlockchainGameResu
             payout: result.payout,
             version: result.version,
             block_height: result.block_height,
+            retry_count: result.retry_count,
+            next_retry_after: result.next_retry_after,
         };
         let settlement_bytes = serde_json::to_vec(&summary).map_err(|e| {
             AtomiqError::Storage(StorageError::WriteFailed(format!(
@@ -137,15 +143,16 @@ pub fn store_game_result(storage: &OptimizedStorage, result: &BlockchainGameResu
         items.push((settlement_key.clone(), settlement_bytes));
         tracing::debug!(
             tx_id = result.transaction_id,
-            "Writing settlement index entry for pending settlement"
+            retry_count = result.retry_count,
+            "Writing settlement index entry for pending/retryable settlement"
         );
     } else {
-        // Explicitly delete settlement index entry if not pending
+        // Explicitly delete settlement index entry if complete or permanently failed
         storage.delete(&settlement_key).ok(); // Ignore errors if key doesn't exist
         tracing::debug!(
             tx_id = result.transaction_id,
             status = ?result.settlement_status,
-            "Removing settlement index entry (non-pending status)"
+            "Removing settlement index entry (complete/permanent status)"
         );
     }
 
@@ -173,10 +180,13 @@ pub fn load_pending_settlements(
     };
 
     // Scan settlement pending index directly
+    // We scan 10x the limit to account for empty/deleted entries
+    // Empty entries are left in place for efficient deletion without compaction
+    let scan_limit = (limit * 10).max(50);
     let rows = storage.scan_prefix(
         SETTLEMENT_PENDING_PREFIX,
         cursor_bytes.as_deref(),
-        limit.max(1),
+        scan_limit,
     );
 
     let rows_count = rows.len();
@@ -196,7 +206,18 @@ pub fn load_pending_settlements(
         
         for tx_id in tx_ids {
             if let Ok(Some(game_result)) = load_game_result(storage, tx_id) {
-                if game_result.settlement_status == SettlementStatus::PendingSettlement {
+                let is_pending = game_result.settlement_status == SettlementStatus::PendingSettlement;
+                let is_retryable = game_result.settlement_status == SettlementStatus::SettlementFailed
+                    && game_result.retry_count < 3
+                    && game_result.next_retry_after.map_or(true, |retry_after| {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis() as i64;
+                        retry_after <= now
+                    });
+                
+                if is_pending || is_retryable {
                     pending_games.push(game_result);
                     if pending_games.len() >= limit {
                         break;
@@ -217,6 +238,11 @@ pub fn load_pending_settlements(
     let mut status_mismatch = 0;
 
     for (key, value) in rows {
+        // Stop if we've collected enough valid results
+        if pending_games.len() >= limit {
+            break;
+        }
+
         // Skip empty values (removed settlements)
         if value.is_empty() {
             empty_count += 1;
@@ -229,8 +255,19 @@ pub fn load_pending_settlements(
                 // Load full game result
                 match load_game_result(storage, summary.transaction_id) {
                     Ok(Some(game_result)) => {
-                        // Double-check status (in case of race conditions)
-                        if game_result.settlement_status == SettlementStatus::PendingSettlement {
+                        // Include PendingSettlement and retryable SettlementFailed
+                        let is_pending = game_result.settlement_status == SettlementStatus::PendingSettlement;
+                        let is_retryable_failed = game_result.settlement_status == SettlementStatus::SettlementFailed
+                            && game_result.retry_count < 3
+                            && game_result.next_retry_after.map_or(true, |retry_after| {
+                                let now = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_millis() as i64;
+                                retry_after <= now
+                            });
+                        
+                        if is_pending || is_retryable_failed {
                             pending_games.push(game_result);
                         } else {
                             status_mismatch += 1;
