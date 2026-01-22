@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 use crate::{
     blockchain_game_processor::GameBetData,
+    blockchain_game_processor::SettlementStatus,
     games::types::{CoinChoice, CoinFlipResult, GameOutcome, GameType, Token, VRFBundle},
 };
 
@@ -147,6 +148,19 @@ pub struct RecentGamesResponse {
 pub struct RecentGameSummary {
     pub game_id: String,
     pub tx_id: u64,
+    /// Convenience field for UIs: true once the game is no longer pending settlement.
+    pub processed: bool,
+    pub settlement_status: SettlementStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub solana_tx_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settlement_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settlement_completed_at: Option<u64>,
+    #[serde(default)]
+    pub retry_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_retry_after: Option<i64>,
     pub player_id: String,
     pub game_type: GameType,
     pub token: Token,

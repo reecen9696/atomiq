@@ -15,6 +15,7 @@ pub mod websocket;
 pub mod cache;
 pub mod games;
 pub mod games_wrappers;
+pub mod settlement;
 
 // High-performance modules (Stage 2 features)
 pub mod concurrent_handler;

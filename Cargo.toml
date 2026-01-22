@@ -37,6 +37,10 @@ path = "src/api_main.rs"
 name = "api-finalized"
 path = "src/bin/api_finalized.rs"
 
+[[bin]]
+name = "backfill_settlement_index"
+path = "tools/backfill_settlement_index.rs"
+
 [dependencies]
 hotstuff_rs = "0.4.0"
 tokio = { version = "1.0", features = ["full"] }
