@@ -109,9 +109,17 @@ pub fn store_game_result(storage: &OptimizedStorage, result: &BlockchainGameResu
         )))
     })?;
 
-    // Prepare settlement index entry
+    // Prepare settlement index entry - only write if actually pending
     let settlement_key = settlement_pending_key(result.transaction_id);
-    let settlement_bytes = if result.settlement_status == SettlementStatus::PendingSettlement {
+    let index_key = recent_game_index_key(result.block_height, result.transaction_id);
+    
+    let mut items: Vec<(Vec<u8>, Vec<u8>)> = vec![
+        (key, bytes),
+        (index_key, Vec::new()),
+    ];
+
+    // Conditionally add settlement index entry
+    if result.settlement_status == SettlementStatus::PendingSettlement {
         let summary = SettlementSummary {
             transaction_id: result.transaction_id,
             player_address: result.player_address.clone(),
@@ -120,18 +128,26 @@ pub fn store_game_result(storage: &OptimizedStorage, result: &BlockchainGameResu
             version: result.version,
             block_height: result.block_height,
         };
-        serde_json::to_vec(&summary).unwrap_or_default()
+        let settlement_bytes = serde_json::to_vec(&summary).map_err(|e| {
+            AtomiqError::Storage(StorageError::WriteFailed(format!(
+                "Failed to encode settlement summary for tx {}: {}",
+                result.transaction_id, e
+            )))
+        })?;
+        items.push((settlement_key.clone(), settlement_bytes));
+        tracing::debug!(
+            tx_id = result.transaction_id,
+            "Writing settlement index entry for pending settlement"
+        );
     } else {
-        Vec::new() // Remove from pending index if not pending
-    };
-
-    // Write the result, recent index, and settlement index atomically.
-    let index_key = recent_game_index_key(result.block_height, result.transaction_id);
-    let items: Vec<(Vec<u8>, Vec<u8>)> = vec![
-        (key, bytes),
-        (index_key, Vec::new()),
-        (settlement_key, settlement_bytes),
-    ];
+        // Explicitly delete settlement index entry if not pending
+        storage.delete(&settlement_key).ok(); // Ignore errors if key doesn't exist
+        tracing::debug!(
+            tx_id = result.transaction_id,
+            status = ?result.settlement_status,
+            "Removing settlement index entry (non-pending status)"
+        );
+    }
 
     storage
         .batch_write(&items)
