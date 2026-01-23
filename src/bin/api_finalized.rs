@@ -6,6 +6,7 @@
 
 use atomiq::{
     api::server::{ApiServer, ApiConfig},
+    api::websocket::WebSocketManager,
     factory::BlockchainFactory,
     finalization::FinalizationWaiter,
     DirectCommitHandle,
@@ -84,6 +85,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The query endpoints depend on indices written during block commit.
     let storage = engine.storage();
 
+    // Create WebSocketManager for real-time events
+    info!("📡 Setting up WebSocket manager...");
+    let websocket_manager = Arc::new(WebSocketManager::new(storage.clone()));
+    websocket_manager.start_background_tasks();
+    
+    // Connect WebSocketManager to DirectCommitEngine for casino win broadcasts
+    engine.set_websocket_manager(websocket_manager.clone()).await;
+    info!("✅ WebSocket manager initialized and connected to blockchain");
+
     // Create FinalizationWaiter from the DirectCommit engine's event publisher
     info!("🔔 Setting up finalization notifications...");
     let event_publisher = engine.event_publisher();
@@ -128,9 +138,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         pinned_vrf_public_key_hex: args.pinned_vrf_public_key_hex,
     };
 
-    // Create API server with finalization support
+    // Create API server with finalization support and inject the WebSocketManager
     info!("🌐 Starting API server with finalization...");
-    let server = ApiServer::with_finalization(api_config, storage, finalization_waiter, tx_sender);
+    let server = ApiServer::with_finalization(api_config, storage, finalization_waiter, tx_sender)
+        .with_websocket_manager(websocket_manager.clone());
     
     info!("✅ System ready!");
     info!("📡 API: http://{}:{}", api_host_for_log, api_port_for_log);

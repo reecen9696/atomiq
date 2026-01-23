@@ -243,6 +243,10 @@ impl BlockchainGameProcessor {
         };
 
         game_store::store_game_result(self.storage.as_ref(), &game_result)?;
+        
+        // Update casino statistics
+        game_store::update_casino_stats(self.storage.as_ref(), &game_result)?;
+        
         Ok(game_result)
     }
 

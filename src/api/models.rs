@@ -188,3 +188,14 @@ pub struct CacheInfo {
     pub cached_blocks: usize,
     pub cached_transactions: usize,
 }
+
+/// Casino statistics response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CasinoStatsResponse {
+    pub total_wagered: f64,
+    pub gross_rtp: f64,
+    pub bet_count: u64,
+    pub bankroll: f64,
+    pub wins_24h: u64,
+    pub wagered_24h: f64,
+}

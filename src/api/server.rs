@@ -90,6 +90,7 @@ pub struct ApiServer {
     storage: Arc<OptimizedStorage>,
     finalization_waiter: Option<Arc<FinalizationWaiter>>,
     blockchain_tx_sender: Option<TransactionSender>,
+    websocket_manager: Option<Arc<WebSocketManager>>,
 }
 
 impl ApiServer {
@@ -99,6 +100,7 @@ impl ApiServer {
             storage,
             finalization_waiter: None,
             blockchain_tx_sender: None,
+            websocket_manager: None,
         }
     }
 
@@ -114,7 +116,14 @@ impl ApiServer {
             storage,
             finalization_waiter: Some(finalization_waiter),
             blockchain_tx_sender: Some(blockchain_tx_sender),
+            websocket_manager: None,
         }
+    }
+
+    /// Inject an existing WebSocketManager (to share across engine and API)
+    pub fn with_websocket_manager(mut self, ws: Arc<WebSocketManager>) -> Self {
+        self.websocket_manager = Some(ws);
+        self
     }
 
     /// Start the API server
@@ -164,7 +173,11 @@ impl ApiServer {
 
     /// Create the application with optimized middleware stack
     fn create_app(&self) -> axum::Router {
-        let websocket_manager = Arc::new(WebSocketManager::new(self.storage.clone()));
+        let websocket_manager = self.websocket_manager.clone().unwrap_or_else(|| {
+            let ws = Arc::new(WebSocketManager::new(self.storage.clone()));
+            ws.start_background_tasks();
+            ws
+        });
         let metrics = Arc::new(monitoring::MetricsRegistry::new());
         
         // Initialize game components if enabled
@@ -273,7 +286,11 @@ impl ApiServer {
             fairness_waiter,
         });
 
-        create_router(state)
+        let router = create_router(state);
+        
+        // Apply timeout to ALL routes EXCEPT WebSocket routes
+        // WebSocket connections need to stay open indefinitely
+        router
             // Request ID middleware (first for tracing)
             .layer(axum::middleware::from_fn(request_id_middleware))
 
@@ -283,7 +300,9 @@ impl ApiServer {
             // CORS layer (before timeout to handle preflight)
             .layer(create_cors_layer(self.config.allowed_origins.clone()))
             
-            // Timeout layer (shorter for high-performance requirements)
+            // Timeout layer - NOTE: This applies to HTTP request handling only.
+            // WebSocket upgrades complete quickly (upgrade response), then the connection
+            // stays open. The timeout doesn't affect the WebSocket connection lifetime.
             .layer(TimeoutLayer::new(Duration::from_secs(self.config.request_timeout_secs)))
             
             // Tracing layer (last for complete request tracing)

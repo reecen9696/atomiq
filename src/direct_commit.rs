@@ -10,6 +10,7 @@ use crate::{
     AtomiqApp, BlockchainMetrics,
     games::{PendingGamesPool, VRFGameEngine, GameProcessor},
     finalization::BlockCommittedEvent,
+    api::websocket::WebSocketManager,
 };
 use std::{
     sync::{
@@ -36,6 +37,8 @@ pub struct DirectCommitEngine {
     pending_game_results: Arc<RwLock<Vec<crate::games::GameResult>>>,
     // Finalization events
     event_publisher: broadcast::Sender<BlockCommittedEvent>,
+    // WebSocket manager for real-time updates
+    websocket_manager: Arc<RwLock<Option<Arc<WebSocketManager>>>>,
 }
 
 impl DirectCommitEngine {
@@ -65,7 +68,19 @@ impl DirectCommitEngine {
             game_processor,
             pending_game_results: Arc::new(RwLock::new(Vec::new())),
             event_publisher,
+            websocket_manager: Arc::new(RwLock::new(None)),
         }
+    }
+    
+    /// Set WebSocket manager for real-time updates
+    pub fn with_websocket_manager(self, manager: Arc<WebSocketManager>) -> Self {
+        *self.websocket_manager.blocking_write() = Some(manager);
+        self
+    }
+    
+    /// Set WebSocket manager after construction (for Arc-wrapped engines)
+    pub async fn set_websocket_manager(&self, manager: Arc<WebSocketManager>) {
+        *self.websocket_manager.write().await = Some(manager);
     }
     
     /// Get event publisher for finalization waiter creation
@@ -232,11 +247,49 @@ impl DirectCommitEngine {
             }
         }
         
+        // Broadcast new block event via WebSocket
+        let ws_manager_opt = self.websocket_manager.read().await;
+        if let Some(ws_manager) = ws_manager_opt.as_ref() {
+            eprintln!("✅✅✅ DIRECT_COMMIT: WebSocket manager found, broadcasting new block");
+            let tx_ids: Vec<String> = block.transactions.iter()
+                .map(|tx| format!("{}", tx.id))
+                .collect();
+            ws_manager.broadcast_new_block(
+                next_height,
+                hex::encode(block.block_hash),
+                tx_ids,
+            ).await;
+        } else {
+            eprintln!("❌❌❌ DIRECT_COMMIT: No WebSocket manager available");
+        }
+        
         // Process and complete pending games (send results to waiting clients)
         let game_results = std::mem::take(&mut *pending_games);
-        for game_result in game_results {
+        eprintln!("🎮 Processing {} game results", game_results.len());
+        for game_result in game_results.iter() {
             let game_id = game_result.game_id.clone();
-            self.games_pool.complete_game(&game_id, game_result);
+            eprintln!("🎲 Game {} outcome: {:?}", game_id, game_result.outcome);
+            
+            // Broadcast casino win events via WebSocket if manager is available
+            if let Some(ws_manager) = self.websocket_manager.read().await.as_ref() {
+                if matches!(game_result.outcome, crate::games::GameOutcome::Win) {
+                    eprintln!("🎉 WIN detected! Broadcasting to WebSocket...");
+                    ws_manager.broadcast_casino_win(
+                        format!("{:?}", game_result.game_type),
+                        game_result.player.player_id.clone(),
+                        game_result.payment.payout_amount,
+                        game_result.payment.token.symbol.clone(),
+                        game_id.clone(),
+                        next_height,
+                    ).await;
+                } else {
+                    eprintln!("Loss - not broadcasting");
+                }
+            } else {
+                eprintln!("⚠️ No WebSocket manager available");
+            }
+            
+            self.games_pool.complete_game(&game_id, game_result.clone());
         }
         drop(pending_games);
         

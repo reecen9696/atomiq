@@ -48,6 +48,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             .route("/api/verify/game/:id", get(verify_game_by_id))
             .route("/api/tokens", get(list_supported_tokens))
             .route("/api/games/recent", get(recent_games_handler))
+            // Casino statistics
+            .route("/api/casino/stats", get(casino_stats_handler))
             // Settlement API endpoints
             .route("/api/settlement/pending", get(get_pending_settlements))
             .route(
@@ -92,6 +94,7 @@ pub fn app_state_to_game_state(app_state: &AppState) -> Option<crate::api::games
             tx_sender: tx_sender.clone(),
             finalization_waiter: app_state.finalization_waiter.clone(),
             fairness_waiter: app_state.fairness_waiter.clone(),
+            websocket_manager: Some(app_state.websocket_manager.clone()),
         })
     } else {
         None

@@ -307,3 +307,101 @@ pub fn load_pending_settlements(
 
     Ok((pending_games, final_cursor))
 }
+
+// ============================================================================
+// Casino Statistics Tracking
+// ============================================================================
+
+const CASINO_STATS_KEY: &[u8] = b"casino:stats";
+
+/// Casino statistics for tracking overall performance
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CasinoStats {
+    pub total_wagered: f64,
+    pub total_paid_out: f64,
+    pub bet_count: u64,
+    pub wins_24h: u64,
+    pub wagered_24h: f64,
+    pub last_24h_reset: i64, // Unix timestamp in seconds
+}
+
+impl Default for CasinoStats {
+    fn default() -> Self {
+        Self {
+            total_wagered: 0.0,
+            total_paid_out: 0.0,
+            bet_count: 0,
+            wins_24h: 0,
+            wagered_24h: 0.0,
+            last_24h_reset: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64,
+        }
+    }
+}
+
+/// Load casino statistics from storage
+pub fn load_casino_stats(storage: &OptimizedStorage) -> AtomiqResult<CasinoStats> {
+    match storage.get(CASINO_STATS_KEY) {
+        Some(bytes) => {
+            let stats: CasinoStats = serde_json::from_slice(&bytes).map_err(|e| {
+                AtomiqError::Storage(StorageError::CorruptedData(format!(
+                    "Failed to decode casino stats: {}",
+                    e
+                )))
+            })?;
+            Ok(stats)
+        }
+        None => Ok(CasinoStats::default()),
+    }
+}
+
+/// Update casino statistics with a new game result
+pub fn update_casino_stats(
+    storage: &OptimizedStorage,
+    game_result: &BlockchainGameResult,
+) -> AtomiqResult<()> {
+    let mut stats = load_casino_stats(storage)?;
+    
+    // Convert lamports to SOL (assuming bet amounts are in lamports)
+    let bet_amount_sol = game_result.bet_amount as f64 / 1_000_000_000.0;
+    let payout_sol = game_result.payout as f64 / 1_000_000_000.0;
+    
+    // Update cumulative stats
+    stats.total_wagered += bet_amount_sol;
+    stats.total_paid_out += payout_sol;
+    stats.bet_count += 1;
+    
+    // Check if we need to reset 24h stats
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    
+    let seconds_in_24h = 86400;
+    if now - stats.last_24h_reset >= seconds_in_24h {
+        stats.wins_24h = 0;
+        stats.wagered_24h = 0.0;
+        stats.last_24h_reset = now;
+    }
+    
+    // Update 24h stats
+    stats.wagered_24h += bet_amount_sol;
+    if payout_sol > bet_amount_sol {
+        stats.wins_24h += 1;
+    }
+    
+    // Save updated stats
+    let bytes = serde_json::to_vec(&stats).map_err(|e| {
+        AtomiqError::Storage(StorageError::WriteFailed(format!(
+            "Failed to encode casino stats: {}",
+            e
+        )))
+    })?;
+    
+    storage.put(CASINO_STATS_KEY, &bytes)
+        .map_err(|e| AtomiqError::Storage(StorageError::WriteFailed(e.to_string())))?;
+    
+    Ok(())
+}

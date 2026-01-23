@@ -37,6 +37,7 @@ pub async fn play_coinflip(
         tx_sender: tx_sender.clone(),
         finalization_waiter: app_state.finalization_waiter.clone(),
         fairness_waiter: app_state.fairness_waiter.clone(),
+        websocket_manager: Some(app_state.websocket_manager.clone()),
     };
     
     // Call the original handler
@@ -63,6 +64,7 @@ pub async fn get_game_result(
         tx_sender: tx_sender.clone(),
         finalization_waiter: app_state.finalization_waiter.clone(),
         fairness_waiter: app_state.fairness_waiter.clone(),
+        websocket_manager: Some(app_state.websocket_manager.clone()),
     };
     
     // Call the original handler
@@ -89,6 +91,7 @@ pub async fn verify_vrf(
         tx_sender: tx_sender.clone(),
         finalization_waiter: app_state.finalization_waiter.clone(),
         fairness_waiter: app_state.fairness_waiter.clone(),
+        websocket_manager: Some(app_state.websocket_manager.clone()),
     };
     
     // Call the original handler
@@ -115,6 +118,7 @@ pub async fn verify_game_by_id(
         finalization_waiter: app_state.finalization_waiter.clone(),
         fairness_waiter: app_state.fairness_waiter.clone(),
         tx_sender: tx_sender.clone(),
+        websocket_manager: Some(app_state.websocket_manager.clone()),
     };
     
     // Call the original handler

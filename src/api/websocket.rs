@@ -23,7 +23,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
-    sync::{broadcast, RwLock},
+    sync::{broadcast, RwLock, Mutex},
     time::interval,
 };
 use tracing::{debug, error, info, warn};
@@ -81,6 +81,30 @@ pub enum WsEvent {
         message: String,
         code: Option<String>,
     },
+    
+    /// Casino game win event
+    #[serde(rename = "casino_win")]
+    CasinoWin {
+        game_type: String,
+        wallet: String,
+        amount_won: f64,
+        currency: String,
+        timestamp: u64,
+        tx_id: String,
+        block_height: u64,
+    },
+    
+    /// Casino statistics update
+    #[serde(rename = "casino_stats")]
+    CasinoStats {
+        total_wagered: f64,
+        gross_rtp: f64,
+        bet_count: u64,
+        bankroll: f64,
+        wins_24h: u64,
+        wagered_24h: f64,
+        timestamp: u64,
+    },
 }
 
 /// WebSocket subscription filters
@@ -106,6 +130,10 @@ pub struct WsSubscription {
     #[serde(default)]
     pub status: bool,
     
+    /// Subscribe to casino win events
+    #[serde(default)]
+    pub casino: bool,
+    
     /// Metrics update interval in seconds
     #[serde(default = "default_metrics_interval")]
     pub metrics_interval_secs: u64,
@@ -123,6 +151,7 @@ impl Default for WsSubscription {
             transaction_ids: HashSet::new(),
             metrics: false,
             status: false,
+            casino: false,
             metrics_interval_secs: 5,
         }
     }
@@ -133,6 +162,10 @@ impl Default for WsSubscription {
 pub struct WebSocketManager {
     /// Broadcast sender for events
     tx: broadcast::Sender<WsEvent>,
+    
+    /// Keep-alive receiver to prevent channel closure
+    /// This ensures the broadcast channel stays open even when no clients are connected
+    _keep_alive_rx: Arc<Mutex<broadcast::Receiver<WsEvent>>>,
     
     /// Connected clients counter
     client_count: Arc<AtomicU64>,
@@ -147,10 +180,11 @@ pub struct WebSocketManager {
 impl WebSocketManager {
     /// Create new WebSocket manager
     pub fn new(storage: Arc<OptimizedStorage>) -> Self {
-        let (tx, _rx) = broadcast::channel(1024);
+        let (tx, rx) = broadcast::channel(1024);
         
         Self {
             tx,
+            _keep_alive_rx: Arc::new(Mutex::new(rx)),
             client_count: Arc::new(AtomicU64::new(0)),
             subscriptions: Arc::new(RwLock::new(HashMap::new())),
             storage,
@@ -161,6 +195,7 @@ impl WebSocketManager {
     pub fn start_background_tasks(&self) {
         self.start_heartbeat_task();
         self.start_metrics_broadcast_task();
+        self.start_receiver_monitor_task();
     }
     
     /// Handle WebSocket upgrade
@@ -180,6 +215,7 @@ impl WebSocketManager {
     /// Handle individual WebSocket connection
     async fn handle_connection(&self, socket: WebSocket, subscription: WsSubscription) {
         let client_id = generate_client_id();
+        info!("🔵 handle_connection START for {}", client_id);
         let client_count = self.client_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         
         info!("🔌 WebSocket client {} connected (total: {})", client_id, client_count);
@@ -189,6 +225,11 @@ impl WebSocketManager {
         
         let (mut sender, mut receiver) = socket.split();
         let mut rx = self.tx.subscribe();
+        info!("📡 Created broadcast receiver for client {}", client_id);
+        
+        // Test broadcast immediately
+        let test_count = self.tx.receiver_count();
+        info!("🧪 TEST: Receiver count right after subscribe: {}", test_count);
         
         // Send welcome message
         if let Err(e) = sender.send(Message::Text(
@@ -230,40 +271,85 @@ impl WebSocketManager {
                 }
             }
             
+            info!("Client {} receive_task ending (stream closed)", client_id_clone);
+            
             // Clean up subscription
             subscriptions.write().await.remove(&client_id_clone);
         });
         
         // Task to send events to client
         let send_task = tokio::spawn(async move {
-            while let Ok(event) = rx.recv().await {
-                // Check if client is subscribed to this event type
-                if !should_send_event(&event, &subscription) {
-                    continue;
+            info!("🟢 send_task STARTED for {}", client_id_for_send);
+            
+            // Periodic alive check
+            let client_id_alive = client_id_for_send.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    info!("💚 send_task for {} still alive", client_id_alive);
                 }
-                
-                let message = match serde_json::to_string(&event) {
-                    Ok(msg) => Message::Text(msg),
-                    Err(e) => {
-                        error!("Failed to serialize event: {}", e);
+            });
+            
+            loop {
+                match rx.recv().await {
+                    Ok(event) => {
+                        info!("📥 send_task for {} received event", client_id_for_send);
+                        // Check if client is subscribed to this event type
+                        if !should_send_event(&event, &subscription) {
+                            continue;
+                        }
+                        
+                        let message = match serde_json::to_string(&event) {
+                            Ok(msg) => Message::Text(msg),
+                            Err(e) => {
+                                error!("Failed to serialize event: {}", e);
+                                continue;
+                            }
+                        };
+                        
+                        if sender.send(message).await.is_err() {
+                            info!("Client {} send failed, closing send_task", client_id_for_send);
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!("Client {} lagged by {} messages, continuing", client_id_for_send, n);
                         continue;
                     }
-                };
-                
-                if sender.send(message).await.is_err() {
-                    debug!("Client {} disconnected", client_id_for_send);
-                    break;
+                    Err(broadcast::error::RecvError::Closed) => {
+                        info!("Broadcast channel closed for client {}, exiting send_task", client_id_for_send);
+                        break;
+                    }
                 }
+            }
+            
+            info!("Client {} send_task ending", client_id_for_send);
+        });
+        
+        info!("✅ Tasks spawned for client {}, waiting in select...", client_id);
+        
+        // TEST: Send a test broadcast immediately
+        let tx_test = self.tx.clone();
+        let client_id_test = client_id.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let test_event = WsEvent::Heartbeat { timestamp: current_timestamp() };
+            let count = tx_test.receiver_count();
+            info!("🧪 TEST BROADCAST for {}: Sending to {} receivers", client_id_test, count);
+            if let Err(e) = tx_test.send(test_event) {
+                warn!("🧪 TEST BROADCAST FAILED: {}", e);
+            } else {
+                info!("🧪 TEST BROADCAST SUCCESS");
             }
         });
         
         // Wait for either task to complete
         tokio::select! {
             _ = receive_task => {
-                debug!("Receive task completed for client {}", client_id);
+                info!("Receive task completed for client {}", client_id);
             }
             _ = send_task => {
-                debug!("Send task completed for client {}", client_id);
+                info!("Send task completed for client {}", client_id);
             }
         }
         
@@ -271,10 +357,14 @@ impl WebSocketManager {
         self.subscriptions.write().await.remove(&client_id);
         let remaining = self.client_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) - 1;
         info!("🔌 WebSocket client {} disconnected (remaining: {})", client_id, remaining);
+        info!("🔴 handle_connection END for {}", client_id);
     }
     
     /// Broadcast new block event
     pub async fn broadcast_new_block(&self, height: u64, hash: String, transactions: Vec<String>) {
+        let receiver_count = self.tx.receiver_count();
+        info!("📤 Broadcasting new block (height: {}) to {} receivers", height, receiver_count);
+        
         let event = WsEvent::NewBlock {
             height,
             hash,
@@ -284,7 +374,9 @@ impl WebSocketManager {
         };
         
         if let Err(e) = self.tx.send(event) {
-            debug!("No WebSocket clients to receive new block event: {}", e);
+            warn!("Failed to broadcast new block event (receivers: {}): {}", receiver_count, e);
+        } else {
+            info!("✅ Successfully broadcast new block to {} clients", receiver_count);
         }
     }
     
@@ -308,6 +400,67 @@ impl WebSocketManager {
         
         if let Err(e) = self.tx.send(event) {
             debug!("No WebSocket clients to receive error event: {}", e);
+        }
+    }
+    
+    /// Broadcast casino win event
+    pub async fn broadcast_casino_win(
+        &self,
+        game_type: String,
+        wallet: String,
+        amount_won: f64,
+        currency: String,
+        tx_id: String,
+        block_height: u64,
+    ) {
+        let receiver_count = self.tx.receiver_count();
+        info!("🎰 Broadcasting casino win to {} receivers: amount_won={} {}", 
+            receiver_count, amount_won, currency);
+        
+        let event = WsEvent::CasinoWin {
+            game_type,
+            wallet,
+            amount_won,
+            currency,
+            timestamp: current_timestamp(),
+            tx_id,
+            block_height,
+        };
+        
+        // Debug: log the serialized event
+        if let Ok(json) = serde_json::to_string(&event) {
+            info!("📤 Serialized casino win event: {}", json);
+        }
+        
+        if let Err(e) = self.tx.send(event) {
+            warn!("Failed to broadcast casino win (receivers: {}): {}", receiver_count, e);
+        } else {
+            info!("✅ Successfully broadcast casino win to {} clients", receiver_count);
+        }
+    }
+    
+    /// Broadcast casino statistics
+    pub async fn broadcast_casino_stats(
+        &self,
+        total_wagered: f64,
+        gross_rtp: f64,
+        bet_count: u64,
+        bankroll: f64,
+        wins_24h: u64,
+        wagered_24h: f64,
+    ) {
+        let event = WsEvent::CasinoStats {
+            total_wagered,
+            gross_rtp,
+            bet_count,
+            bankroll,
+            wins_24h,
+            wagered_24h,
+            timestamp: current_timestamp(),
+        };
+        
+        if let Err(e) = self.tx.send(event) {
+            debug!("No WebSocket clients to receive casino stats event: {}", e);
         }
     }
     
@@ -367,6 +520,21 @@ impl WebSocketManager {
         });
     }
     
+    /// Monitor receiver count for debugging
+    fn start_receiver_monitor_task(&self) {
+        let tx = self.tx.clone();
+        
+        tokio::spawn(async move {
+            let mut interval = interval(Duration::from_secs(5)); // Every 5 seconds
+            
+            loop {
+                interval.tick().await;
+                let count = tx.receiver_count();
+                info!("🔍 Receiver count monitor: {} active receivers", count);
+            }
+        });
+    }
+    
     /// Get latest block height
     async fn get_latest_block_height(&self) -> Result<u64, Box<dyn std::error::Error>> {
         // Implementation depends on storage interface
@@ -386,6 +554,8 @@ fn should_send_event(event: &WsEvent, subscription: &WsSubscription) -> bool {
         WsEvent::Status { .. } => subscription.status,
         WsEvent::Heartbeat { .. } => true, // Always send heartbeats
         WsEvent::Error { .. } => true, // Always send errors
+        WsEvent::CasinoWin { .. } => subscription.casino,
+        WsEvent::CasinoStats { .. } => subscription.casino,
     }
 }
 
@@ -463,6 +633,9 @@ pub struct WsQuery {
     #[serde(default)]
     pub status: bool,
     
+    #[serde(default)]
+    pub casino: bool,
+    
     #[serde(default = "default_metrics_interval")]
     pub metrics_interval: u64,
 }
@@ -475,6 +648,7 @@ impl From<WsQuery> for WsSubscription {
             transaction_ids: HashSet::new(),
             metrics: query.metrics,
             status: query.status,
+            casino: query.casino,
             metrics_interval_secs: query.metrics_interval,
         }
     }

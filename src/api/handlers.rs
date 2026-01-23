@@ -402,3 +402,38 @@ pub async fn transaction_handler(
         ))
     }
 }
+
+/// Casino statistics endpoint
+/// GET /api/casino/stats
+pub async fn casino_stats_handler(
+    Extension(request_id): Extension<RequestId>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<CasinoStatsResponse>, ApiError> {
+    let raw_storage = state.storage.get_raw_storage();
+    
+    let stats = game_store::load_casino_stats(raw_storage.as_ref())
+        .map_err(|e| ApiError::internal_error(
+            request_id.0,
+            format!("Failed to load casino stats: {}", e)
+        ))?;
+    
+    // Calculate gross RTP (Return To Player)
+    let gross_rtp = if stats.total_wagered > 0.0 {
+        (stats.total_paid_out / stats.total_wagered) * 100.0
+    } else {
+        0.0
+    };
+    
+    // Get casino vault balance (bankroll) - this would need to be fetched from Solana
+    // For now, return a placeholder value
+    let bankroll = 0.0; // TODO: Fetch from casino vault PDA
+    
+    Ok(Json(CasinoStatsResponse {
+        total_wagered: stats.total_wagered,
+        gross_rtp,
+        bet_count: stats.bet_count,
+        bankroll,
+        wins_24h: stats.wins_24h,
+        wagered_24h: stats.wagered_24h,
+    }))
+}

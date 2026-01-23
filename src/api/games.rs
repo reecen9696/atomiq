@@ -105,6 +105,9 @@ pub struct GameApiState {
 
     /// Fairness waiter for awaiting persisted game results (optional - without this, games may race and return pending)
     pub fairness_waiter: Option<Arc<FairnessWaiter>>,
+
+    /// WebSocket manager for broadcasting casino wins
+    pub websocket_manager: Option<Arc<crate::api::websocket::WebSocketManager>>,
 }
 
 /// Play coin flip game by processing transaction immediately on blockchain
@@ -233,11 +236,11 @@ pub async fn play_coinflip(
                 game_id: format!("tx-{}", tx_id),
                 game_type: result.game_type,
                 player: PlayerInfo {
-                    player_id: result.player_address,
+                    player_id: result.player_address.clone(),
                     wallet_signature: None,
                 },
                 payment: PaymentInfo {
-                    token: result.token,
+                    token: result.token.clone(),
                     bet_amount: result.bet_amount as f64 / 1_000_000_000.0, // Convert lamports to SOL
                     payout_amount: result.payout as f64 / 1_000_000_000.0,
                     settlement_tx_id: None,
@@ -248,7 +251,7 @@ pub async fn play_coinflip(
                     public_key: hex::encode(state.game_processor.get_public_key()),
                     input_message: result.vrf_input_message.clone(),
                 },
-                outcome: result.outcome,
+                outcome: result.outcome.clone(),
                 timestamp: result.timestamp,
                 game_data: GameData::CoinFlip {
                     player_choice: result.player_choice,
@@ -263,6 +266,24 @@ pub async fn play_coinflip(
                     "finalization_confirmed": true
                 })),
             };
+
+            // Broadcast casino win to WebSocket subscribers if this was a win
+            if matches!(result.outcome, crate::games::GameOutcome::Win) {
+                if let Some(ws_manager) = &state.websocket_manager {
+                    tracing::info!("🎰 Broadcasting casino win for player {} (payout: {} SOL)", 
+                        result.player_address, 
+                        result.payout as f64 / 1_000_000_000.0
+                    );
+                    ws_manager.broadcast_casino_win(
+                        result.game_type.to_string(),
+                        result.player_address.clone(),
+                        result.payout as f64 / 1_000_000_000.0,
+                        result.token.symbol.clone(),
+                        format!("tx-{}", tx_id),
+                        block_height,
+                    ).await;
+                }
+            }
             
             // Return complete game result with finalization proof
             Ok(Json(GameResponse::Complete {
@@ -632,6 +653,7 @@ mod tests {
             tx_sender,
             finalization_waiter: None,
             fairness_waiter: None,
+            websocket_manager: None,
         };
 
         let response = verify_game_by_id(Path("tx-1".to_string()), State(state))
@@ -657,6 +679,7 @@ mod tests {
             tx_sender,
             finalization_waiter: None,
             fairness_waiter: None,
+            websocket_manager: None,
         };
 
         let request = CoinFlipPlayRequest {
